@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# mailview — fzf + glow 인터랙티브 메일 뷰어
+#
+# 사용법:
+#   mailview [키워드] [mailgrep 옵션...]
+#   mailview               # 최근 메일 목록
+#   mailview "견적서"       # FTS 검색 후 선택
+#   mailview --thread t_abc123  # 스레드 전체 열람
+#
+# 키 바인딩:
+#   Enter      선택 → glow로 전체 열람
+#   Ctrl-P     선택 → bat 원문 표시 (frontmatter 포함)
+#   Ctrl-O     선택 → $EDITOR로 열기
+#   Ctrl-T     같은 스레드 필터링
+#   Ctrl-F     선택 → 폴더 기준 재검색
+#   ESC / q    종료
+
+set -euo pipefail
+
+ARCHIVE_ROOT="${MAIL_ARCHIVE:-$HOME/mail-archive}"
+DB="$ARCHIVE_ROOT/index.sqlite"
+
+# 의존성 체크
+for cmd in fzf glow sqlite3; do
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "오류: $cmd 가 설치되어 있지 않습니다." >&2
+        case "$cmd" in
+            fzf)    echo "  설치: sudo apt install fzf" >&2 ;;
+            glow)   echo "  설치: sudo snap install glow 또는 go install github.com/charmbracelet/glow@latest" >&2 ;;
+            sqlite3) echo "  설치: sudo apt install sqlite3" >&2 ;;
+        esac
+        exit 1
+    fi
+done
+
+if [[ ! -f "$DB" ]]; then
+    echo "오류: 인덱스 없음 → $DB" >&2
+    exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# mailgrep으로 경로 목록 수집
+get_paths() {
+    if [[ $# -gt 0 ]]; then
+        "$SCRIPT_DIR/mailgrep" "$@" --paths-only --limit 500
+    else
+        # 키워드 없음 → 최근 100통
+        sqlite3 "$DB" "SELECT path FROM messages ORDER BY date DESC LIMIT 100;"
+    fi
+}
+
+# 경로 목록 → fzf 표시용 레이블 생성
+format_entry() {
+    local path="$1"
+    sqlite3 "$DB" \
+        "SELECT printf('%-10s  %-28s  %s', substr(date,1,10), substr(from_name||' <'||from_addr||'>',1,28), subject)
+         FROM messages WHERE path='$path' LIMIT 1;" 2>/dev/null \
+    || echo "$path"
+}
+
+# 임시 파일: path|label 목록
+TMP=$(mktemp)
+trap 'rm -f "$TMP"' EXIT
+
+while IFS= read -r path; do
+    [[ -f "$path" ]] || continue
+    label=$(format_entry "$path")
+    echo "$path|$label" >> "$TMP"
+done < <(get_paths "$@")
+
+if [[ ! -s "$TMP" ]]; then
+    echo "결과 없음."
+    exit 0
+fi
+
+# fzf 실행
+SELECTED=$(
+    awk -F'|' '{print $2 "\t" $1}' "$TMP" | \
+    fzf \
+        --ansi \
+        --reverse \
+        --header "Enter: 열람  Ctrl-P: 원문  Ctrl-O: 편집  ESC: 종료" \
+        --preview 'glow -s dark "$(echo {} | cut -f2)" 2>/dev/null || cat "$(echo {} | cut -f2)"' \
+        --preview-window "right:60%:wrap" \
+        --bind "ctrl-p:execute(bat --style=full '$(echo {} | cut -f2)' 2>/dev/null || less '$(echo {} | cut -f2)')+abort" \
+        --bind "ctrl-o:execute(\${EDITOR:-nano} '$(echo {} | cut -f2)')+abort" \
+        --delimiter $'\t' \
+        --with-nth 1 \
+    | cut -f2
+)
+
+if [[ -n "$SELECTED" && -f "$SELECTED" ]]; then
+    glow -p -s dark "$SELECTED"
+fi

@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "mailtomd"
+version = "0.2.0"
+description = "PST → Markdown archive pipeline with CLI search and Obsidian wiki (cross-platform)"
+requires-python = ">=3.10"
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "html2text>=2024.2",
+    "python-slugify>=8.0",
+    "tqdm>=4.66",
+    "mail-parser>=3.15",
+    "python-dateutil>=2.9",
+    "chardet>=5.2",
+    "click>=8.1",
+    "tomli>=2.0; python_version<'3.11'",  # Python 3.11 미만에서 tomllib 대체
+]
+
+[project.optional-dependencies]
+# Linux/WSL: libpff-python (pypff) 기반 PST 파싱
+linux = [
+    "libpff-python",
+]
+# Windows Native: Outlook COM API
+win32 = [
+    "pywin32",
+]
+dev = [
+    "pytest>=8",
+    "pytest-cov",
+]
+
+[project.scripts]
+# 변환/인덱스/위키화
+pst2md          = "scripts.pst2md:main"
+build-index     = "scripts.build_index:main"
+enrich          = "scripts.enrich:main"
+verify          = "scripts.verify_integrity:main"
+archive-monthly = "scripts.archive_monthly:main"
+# CLI 도구 (크로스플랫폼 Python 버전)
+mailgrep        = "scripts.mailgrep:main"
+mailview        = "scripts.mailview:main"
+mailstat        = "scripts.mailstat:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scripts*"]

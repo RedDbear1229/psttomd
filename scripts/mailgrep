@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# mailgrep — SQLite FTS5 기반 메일 검색
+#
+# 사용법:
+#   mailgrep <키워드> [옵션]
+#
+# 옵션:
+#   --from <주소/이름>     발신자 필터 (부분 일치)
+#   --to   <주소>          수신자 필터 (부분 일치)
+#   --after  <YYYY-MM-DD>  이 날짜 이후
+#   --before <YYYY-MM-DD>  이 날짜 이전
+#   --folder <패턴>        폴더 경로 부분 일치
+#   --thread <thread_id>   스레드 전체
+#   --limit <N>            최대 결과 수 (기본: 50)
+#   --json                 JSON 출력 (파이프용)
+#   --paths-only           파일 경로만 출력 (fzf 파이프용)
+#
+# 예시:
+#   mailgrep "견적서" --from 홍길동 --after 2023-01-01
+#   mailgrep "계약" --folder Inbox/Project-A --limit 20
+
+set -euo pipefail
+
+ARCHIVE_ROOT="${MAIL_ARCHIVE:-$HOME/mail-archive}"
+DB="$ARCHIVE_ROOT/index.sqlite"
+
+if [[ ! -f "$DB" ]]; then
+    echo "오류: 인덱스 없음 → $DB" >&2
+    echo "먼저 실행: python scripts/build_index.py" >&2
+    exit 1
+fi
+
+# 인자 파싱
+QUERY=""
+FROM_FILTER=""
+TO_FILTER=""
+AFTER=""
+BEFORE=""
+FOLDER_FILTER=""
+THREAD_FILTER=""
+LIMIT=50
+OUTPUT_JSON=false
+PATHS_ONLY=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --from)    FROM_FILTER="$2";   shift 2 ;;
+        --to)      TO_FILTER="$2";     shift 2 ;;
+        --after)   AFTER="$2";         shift 2 ;;
+        --before)  BEFORE="$2";        shift 2 ;;
+        --folder)  FOLDER_FILTER="$2"; shift 2 ;;
+        --thread)  THREAD_FILTER="$2"; shift 2 ;;
+        --limit)   LIMIT="$2";         shift 2 ;;
+        --json)    OUTPUT_JSON=true;   shift ;;
+        --paths-only) PATHS_ONLY=true; shift ;;
+        -*)        echo "알 수 없는 옵션: $1" >&2; exit 1 ;;
+        *)         QUERY="$1";         shift ;;
+    esac
+done
+
+# SQL 구성
+build_sql() {
+    local sql=""
+    local where_clauses=()
+    local join_fts=false
+
+    # FTS 쿼리
+    if [[ -n "$QUERY" ]]; then
+        join_fts=true
+        # FTS5 쿼리 이스케이프: 특수문자 처리
+        local escaped_query
+        escaped_query=$(python3 -c "
+import sys, re
+q = sys.argv[1]
+# FTS5 특수문자 이스케이프
+q = re.sub(r'([\"*\^])', r'\\\1', q)
+print(q)
+" "$QUERY" 2>/dev/null || echo "$QUERY")
+        where_clauses+=("fts.rowid = m.id AND messages_fts MATCH $(sqlite3 :memory: "SELECT quote('$escaped_query')")")
+    fi
+
+    # 메타 필터
+    [[ -n "$FROM_FILTER" ]]   && where_clauses+=("(m.from_name LIKE '%$FROM_FILTER%' OR m.from_addr LIKE '%$FROM_FILTER%')")
+    [[ -n "$TO_FILTER" ]]     && where_clauses+=("m.to_addrs LIKE '%$TO_FILTER%'")
+    [[ -n "$AFTER" ]]         && where_clauses+=("m.date >= '${AFTER}T00:00:00+00:00'")
+    [[ -n "$BEFORE" ]]        && where_clauses+=("m.date <= '${BEFORE}T23:59:59+00:00'")
+    [[ -n "$FOLDER_FILTER" ]] && where_clauses+=("m.folder LIKE '%$FOLDER_FILTER%'")
+    [[ -n "$THREAD_FILTER" ]] && where_clauses+=("m.thread = '$THREAD_FILTER'")
+
+    local where_str=""
+    if [[ ${#where_clauses[@]} -gt 0 ]]; then
+        where_str="WHERE $(IFS=' AND '; echo "${where_clauses[*]}")"
+    fi
+
+    local from_str="FROM messages m"
+    if $join_fts; then
+        from_str="FROM messages m, messages_fts fts"
+    fi
+
+    if $OUTPUT_JSON; then
+        sql="SELECT json_object(
+            'date', m.date,
+            'from', m.from_name,
+            'subject', m.subject,
+            'folder', m.folder,
+            'thread', m.thread,
+            'path', m.path
+        ) $from_str $where_str ORDER BY m.date DESC LIMIT $LIMIT;"
+    elif $PATHS_ONLY; then
+        sql="SELECT m.path $from_str $where_str ORDER BY m.date DESC LIMIT $LIMIT;"
+    else
+        sql="SELECT
+            substr(m.date, 1, 10) as date,
+            printf('%-30s', substr(m.from_name || ' <' || m.from_addr || '>', 1, 30)) as sender,
+            substr(m.subject, 1, 50) as subject,
+            m.path
+        $from_str $where_str ORDER BY m.date DESC LIMIT $LIMIT;"
+    fi
+
+    echo "$sql"
+}
+
+SQL=$(build_sql)
+
+if $OUTPUT_JSON || $PATHS_ONLY; then
+    sqlite3 "$DB" "$SQL"
+else
+    # 컬럼 헤더 포함 테이블 출력
+    echo ""
+    printf "%-12s %-32s %-50s\n" "날짜" "발신자" "제목"
+    printf "%-12s %-32s %-50s\n" "----------" "------------------------------" "--------------------------------------------------"
+    sqlite3 -separator $'\t' "$DB" "$SQL" | while IFS=$'\t' read -r date sender subject path; do
+        printf "%-12s %-32s %-50s\n" "$date" "$sender" "$subject"
+        echo "  → $path"
+    done
+    echo ""
+fi

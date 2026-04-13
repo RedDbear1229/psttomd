@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# mailstat — 메일 아카이브 통계
+#
+# 사용법:
+#   mailstat [커맨드] [옵션]
+#
+# 커맨드:
+#   summary          전체 요약 (기본)
+#   monthly          월별 수신량
+#   senders [N]      상위 N명 발신자 (기본: 20)
+#   folders          폴더별 통계
+#   threads [N]      긴 스레드 상위 N개
+#   attachments      첨부 용량 통계
+#   range            날짜 범위 확인
+
+set -euo pipefail
+
+ARCHIVE_ROOT="${MAIL_ARCHIVE:-$HOME/mail-archive}"
+DB="$ARCHIVE_ROOT/index.sqlite"
+
+if [[ ! -f "$DB" ]]; then
+    echo "오류: 인덱스 없음 → $DB" >&2
+    exit 1
+fi
+
+q() { sqlite3 -column -header "$DB" "$@"; }
+
+CMD="${1:-summary}"
+shift || true
+
+case "$CMD" in
+    summary)
+        echo "=== 아카이브 요약 ==="
+        q "SELECT
+            COUNT(*)                          AS 총_메일수,
+            COUNT(DISTINCT from_addr)         AS 고유발신자,
+            COUNT(DISTINCT thread)            AS 스레드수,
+            COUNT(DISTINCT source_pst)        AS PST파일수,
+            MIN(substr(date,1,10))            AS 가장오래된메일,
+            MAX(substr(date,1,10))            AS 가장최근메일
+           FROM messages;"
+        ;;
+
+    monthly)
+        echo "=== 월별 메일 수 ==="
+        q "SELECT
+            substr(date,1,7)  AS 월,
+            COUNT(*)          AS 메일수
+           FROM messages
+           WHERE date != ''
+           GROUP BY 1
+           ORDER BY 1 DESC
+           LIMIT 36;"
+        ;;
+
+    senders)
+        N="${1:-20}"
+        echo "=== 상위 발신자 (Top $N) ==="
+        q "SELECT
+            from_addr                 AS 발신자,
+            MAX(from_name)            AS 이름,
+            COUNT(*)                  AS 메일수,
+            MAX(substr(date,1,10))    AS 마지막메일
+           FROM messages
+           WHERE from_addr != ''
+           GROUP BY from_addr
+           ORDER BY 메일수 DESC
+           LIMIT $N;"
+        ;;
+
+    folders)
+        echo "=== 폴더별 통계 ==="
+        q "SELECT
+            folder        AS 폴더,
+            COUNT(*)      AS 메일수
+           FROM messages
+           GROUP BY folder
+           ORDER BY 메일수 DESC
+           LIMIT 30;"
+        ;;
+
+    threads)
+        N="${1:-20}"
+        echo "=== 긴 스레드 Top $N ==="
+        q "SELECT
+            thread                AS 스레드ID,
+            COUNT(*)              AS 메일수,
+            MIN(substr(date,1,10)) AS 시작일,
+            MAX(substr(date,1,10)) AS 마지막,
+            COUNT(DISTINCT from_addr) AS 참여자수
+           FROM messages
+           GROUP BY thread
+           ORDER BY 메일수 DESC
+           LIMIT $N;"
+        ;;
+
+    attachments)
+        echo "=== 첨부 통계 ==="
+        ARCHIVE_ROOT="${MAIL_ARCHIVE:-$HOME/mail-archive}"
+        ATT_DIR="$ARCHIVE_ROOT/attachments"
+        LARGE_DIR="$ARCHIVE_ROOT/attachments_large"
+        if [[ -d "$ATT_DIR" ]]; then
+            echo "일반 첨부:"
+            du -sh "$ATT_DIR" 2>/dev/null && find "$ATT_DIR" -type f | wc -l | xargs echo "  파일 수:"
+        fi
+        if [[ -d "$LARGE_DIR" ]]; then
+            echo "대용량 첨부 (>50MB):"
+            du -sh "$LARGE_DIR" 2>/dev/null && find "$LARGE_DIR" -type f | wc -l | xargs echo "  파일 수:"
+        fi
+        ;;
+
+    range)
+        echo "=== 날짜 범위 ==="
+        q "SELECT
+            MIN(substr(date,1,10)) AS 시작,
+            MAX(substr(date,1,10)) AS 종료,
+            COUNT(*) AS 총메일수
+           FROM messages WHERE date != '';"
+        ;;
+
+    *)
+        echo "사용법: mailstat [summary|monthly|senders|folders|threads|attachments|range]"
+        exit 1
+        ;;
+esac

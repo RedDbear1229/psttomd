@@ -4,6 +4,9 @@
 
 의존성 관리는 **[uv](https://docs.astral.sh/uv)** 를 사용합니다.
 
+> **Android/Termux 참고**: uv 는 `aarch64-linux-android` 를 지원하지 않습니다.
+> 해당 환경에서는 아래 [pip 대체 설치](#pip-대체-설치-androidtermux) 섹션을 참고하세요.
+
 ### uv 설치
 
 ```bash
@@ -20,8 +23,8 @@ winget install astral-sh.uv
 ### 저장소 클론 및 의존성 설치
 
 ```bash
-git clone https://github.com/RedDbear1229/pst2md.git
-cd pst2md
+git clone https://github.com/RedDbear1229/psttomd.git
+cd psttomd
 
 # 기본 의존성 + 개발 도구 (pytest, ruff, mypy)
 uv sync --group dev
@@ -35,6 +38,25 @@ uv sync --group dev --extra win32
 
 `uv sync` 는 `pyproject.toml` 을 읽어 `.venv/` 를 자동 생성합니다.
 별도로 `python -m venv` 를 실행하거나 pip 를 쓸 필요가 없습니다.
+
+### pip 대체 설치 (Android/Termux)
+
+```bash
+# ncurses 충돌 해결 후 Python 설치
+pkg install -y ncurses=6.5.20240831-3
+pkg install -y python
+
+# ld / ar 심링크 (libpff-python 소스 빌드 필요)
+ln -sf $(which lld)     $(dirname $(which lld))/ld
+ln -sf $(which llvm-ar) $(dirname $(which llvm-ar))/ar
+
+pip install click tomli tqdm html2text beautifulsoup4 \
+    python-slugify chardet python-dateutil mail-parser pyyaml pytest
+pip install libpff-python
+
+# 테스트 실행
+python -m pytest tests/ -v
+```
 
 ### 명령 실행
 
@@ -137,9 +159,18 @@ feat: mailview Ctrl-A 첨부 파일 열기 기능 추가
 ## 새 PST 백엔드 추가
 
 1. `scripts/lib/pst_backend.py` 에 `PSTBackend` 상속 클래스 작성
+   - `open()`, `iter_messages()`, `get_attachment_data()`, `close()` 구현
+   - 선택적 의존성 라이브러리는 `open()` 내부에서 import
 2. `get_backend()` 팩토리에 분기 추가
 3. `pyproject.toml` `[project.optional-dependencies]` 에 의존성 추가
 4. `CLAUDE.md` 의존성 표 업데이트
+
+### PypffBackend 특이 사항
+
+- libpff C 레이어 예외는 `getattr(obj, attr, default)` 의 세 번째 인자로 잡히지 않음
+  → `_safe_get(raw, attr, default)` 메서드로 모든 속성 접근을 `try/except Exception` 래핑
+- 첨부 파일명: `attachment.name` → MAPI record_sets 탐색 (`_get_attachment_name_from_mapi`)
+  순서: 0x3707 → 0x3704 → 0x3001
 
 ---
 

@@ -6,6 +6,54 @@
 
 ---
 
+## [0.3.0] - 2026-04-14
+
+### Added
+- **테스트 인프라** (`tests/data/test.pst`)
+  - java-libpst 프로젝트의 공개 샘플 PST (265KB) 다운로드 및 포함
+  - Calendar(1) / Contacts(2) / Freebusy(1) — 총 4개 메시지, 첨부 2개
+- **magic bytes 기반 첨부 파일 확장자 추론** (`scripts/lib/attachments.py`)
+  - `_guess_ext()`: PNG · JPG · PDF · ZIP · DOC(OLE2) · OOXML · GIF · BMP · MP4 · GZ · BZ2 자동 감지
+  - 파일명에 확장자 없을 때 자동으로 폴백 적용
+- **PypffBackend MAPI record_sets 첨부 파일명 추출** (`scripts/lib/pst_backend.py`)
+  - `_get_attachment_name_from_mapi()`: `attachment.name = None` 일 때 record_sets 탐색
+  - PR_ATTACH_LONG_FILENAME (0x3707) → PR_ATTACH_FILENAME (0x3704) → PR_DISPLAY_NAME (0x3001) 순서 폴백
+  - 결과: `attachment_0` 대신 실제 파일명 또는 표시 이름 반영
+
+### Fixed
+- **`--resume` 중복 변환 및 state 저장 버그** (`scripts/pst2md.py`)
+  - Calendar/Contact 등 Message-ID 없는 아이템은 `raw_msgid` 빈 문자열 → `done_ids.add()` 호출 안됨 → `.state.json` 항상 비어있던 문제 수정
+  - resume 체크 시 `message_to_md()` 와 동일한 seed로 generated msgid 사전 계산
+  - `done_ids` 추적을 `raw_msgid` → `meta["msgid"]` (항상 설정됨) 로 변경
+  - `index_staging.jsonl` resume 모드에서 기존 msgid 중복 추가 방지
+- **`address_display("Unknown")` → `"unknown"` 소문자 변환 버그** (`scripts/lib/normalize.py`)
+  - 원인: `parseaddr("Unknown")` → `("", "Unknown")` 에서 `addr.lower()` 적용
+  - 수정: `@` 없는 addr은 이메일 주소가 아닌 display name으로 처리 → 원문 보존
+- **`normalize_address()` 비이메일 문자열 소문자 반환 버그** (`scripts/lib/normalize.py`)
+  - 원인: `addr` 에 `@` 없어도 `addr.lower()` 로 반환
+  - 수정: `@` 없으면 `""` 반환 (이메일이 아닌 값 제외)
+- **`date:` (빈 값) YAML frontmatter 모호성** (`scripts/pst2md.py`)
+  - 날짜 없는 메시지에서 `date: ` (trailing whitespace) 형태로 저장되던 문제
+  - 수정: `date: null` 로 명시 (모든 YAML 파서에서 일관성 보장)
+- **`Win32ComBackend.get_attachment_data` TOCTOU 경쟁 조건** (`scripts/lib/pst_backend.py`)
+  - `tempfile.mktemp()` → `tempfile.mkstemp()` + `os.close(fd)` 로 안전한 임시 파일 생성
+- **`ReadpstBackend._to_msgdata` 본문 추출 오류** (`scripts/lib/pst_backend.py`)
+  - `mail.body` → `mail.text_html` / `mail.text_plain` 구분 (mail-parser 4.x API)
+- **`Win32ComBackend.close()` AttributeError** (`scripts/lib/pst_backend.py`)
+  - `self._ns` 없을 때 `close()` 호출 시 AttributeError 방지 (`hasattr` 가드 추가)
+- **`convert_pst()` 예외 시 백엔드 리소스 누수** (`scripts/pst2md.py`)
+  - `backend.close()` 를 `with get_backend(config) as backend:` 컨텍스트 매니저로 보장
+- **YAML frontmatter 인젝션 취약점** (`scripts/pst2md.py`)
+  - 발신자명·제목 등에 `"` 포함 시 frontmatter 파싱 깨지는 문제
+  - `_yaml_str()` 헬퍼로 `"` → `'` 이스케이프 처리
+- **PypffBackend libpff 저수준 예외 방어** (`scripts/lib/pst_backend.py`)
+  - `getattr(raw, attr, default)` 는 `AttributeError` 만 잡음 — libpff C 레이어 예외 미처리
+  - `_safe_get()` 메서드: 모든 속성 접근을 `try/except Exception` 으로 래핑
+  - `number_of_attachments`, 첨부 객체 로드, 파일명/크기/데이터 읽기, 폴더 순회 전 구간 방어 처리
+- **`subprocess` import 함수 내부 → 모듈 최상단 이동** (`scripts/lib/pst_backend.py`)
+
+---
+
 ## [0.2.1] - 2026-04-14
 
 ### Changed
@@ -17,6 +65,9 @@
   - `CLAUDE.md`: 자주 쓰는 커맨드 `python scripts/*.py` → `uv run <entry-point>`
   - `docs/runbook.md`: 모든 실행 명령 `uv run` 기준으로 업데이트
   - `.gitignore`: `uv.lock` 커밋 대상 유지 (애플리케이션 재현 가능 빌드)
+
+> **참고**: uv는 Android/Termux (aarch64-linux-android) 를 지원하지 않습니다.
+> 해당 환경에서는 `pip install` 을 직접 사용하세요. (→ [트러블슈팅](docs/guide.md#11-트러블슈팅))
 
 ---
 

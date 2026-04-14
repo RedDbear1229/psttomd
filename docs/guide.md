@@ -140,7 +140,7 @@ chmod +x install_linux.sh
 4. `pip install -e ".[linux]"` 실행
 5. `~/.pst2md/config.toml` 초기 생성
 
-#### 수동 설치
+#### 수동 설치 (uv)
 
 ```bash
 # 1. 시스템 패키지
@@ -153,13 +153,13 @@ sudo snap install glow
 # snap 없을 때:
 # go install github.com/charmbracelet/glow@latest
 
-# 3. Python 가상환경
-cd ~/pst2md
-python3 -m venv .venv
-source .venv/bin/activate
+# 3. uv 설치 (Python 환경 관리)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.bashrc
 
-# 4. Python 패키지
-pip install -e ".[linux]"
+# 4. Python 의존성
+cd ~/pst2md
+uv sync --extra linux
 
 # 5. 설정 파일 생성
 python3 -c "
@@ -169,15 +169,17 @@ print(init_config_file())
 "
 ```
 
+> **Android/Termux 환경**: uv는 `aarch64-linux-android`를 지원하지 않습니다.
+> `pip install` 을 직접 사용하세요 → [트러블슈팅: Android/Termux 환경](#android--termux-환경)
+
 #### PATH 설정
 
 `~/.bashrc` 또는 `~/.zshrc` 에 추가:
 
 ```bash
-# pst2md
-source ~/pst2md/.venv/bin/activate
+# pst2md (uv 환경)
+export PATH="$HOME/.local/bin:$PATH"   # uv 경로
 export MAIL_ARCHIVE="$HOME/mail-archive"
-export PATH="$HOME/pst2md/scripts:$PATH"
 ```
 
 적용:
@@ -225,15 +227,18 @@ winget install sharkdp.bat
 winget install BurntSushi.ripgrep.MSVC
 winget install SQLite.SQLite
 
-# 2. Python 패키지
+# 2. uv 설치
+winget install astral-sh.uv
+
+# 3. Python 의존성
 cd C:\Users\YOU\pst2md
-pip install -e ".[win32]"
+uv sync --extra win32
 
-# 3. pywin32 초기화 (win32com 백엔드 사용 시 필수)
-python -m pywin32_postinstall -install
+# 4. pywin32 초기화 (win32com 백엔드 사용 시 필수)
+uv run python -m pywin32_postinstall -install
 
-# 4. 설정 파일 생성
-python -c "
+# 5. 설정 파일 생성
+uv run python -c "
 import sys; sys.path.insert(0,'scripts')
 from lib.config import init_config_file
 print(init_config_file())
@@ -317,17 +322,34 @@ ls /mnt/c/Users/*/Documents/Outlook\ Files/*.pst 2>/dev/null
 ls /mnt/c/Users/*/AppData/Local/Microsoft/Outlook/*.pst 2>/dev/null
 ```
 
+### Step 0: 샘플 PST로 동작 검증 (선택)
+
+실제 PST 파일을 투입하기 전에 포함된 샘플로 파이프라인을 먼저 검증합니다.
+
+```bash
+# dry-run 테스트
+uv run pst2md --pst tests/data/test.pst --out ~/mail-archive-test --dry-run
+# 예상 출력: total: 4, converted: 4, error: 0
+
+# 실제 변환 후 resume 확인
+uv run pst2md --pst tests/data/test.pst --out ~/mail-archive-test
+uv run pst2md --pst tests/data/test.pst --out ~/mail-archive-test --resume
+# 예상 출력: total: 4, skipped: 4, converted: 0
+
+rm -rf ~/mail-archive-test
+```
+
 ### Step 1: dry-run으로 사전 확인
 
 ```bash
 # Linux/WSL
-python scripts/pst2md.py \
+uv run pst2md \
     --pst "/mnt/c/Users/YOU/Documents/Outlook Files/archive_2020.pst" \
     --dry-run
 
 # Windows
-python scripts\pst2md.py ^
-    --pst "C:\Users\YOU\Documents\Outlook Files\archive_2020.pst" ^
+uv run pst2md `
+    --pst "C:\Users\YOU\Documents\Outlook Files\archive_2020.pst" `
     --dry-run
 ```
 
@@ -345,31 +367,31 @@ python scripts\pst2md.py ^
 
 ```bash
 # Linux/WSL (Outlook 종료 후 실행)
-python scripts/pst2md.py \
+uv run pst2md \
     --pst "/mnt/c/Users/YOU/Documents/Outlook Files/archive_2020.pst"
 
 # Windows (Outlook 실행 중에도 가능 - win32com 백엔드)
-python scripts\pst2md.py ^
+uv run pst2md `
     --pst "C:\Users\YOU\Documents\Outlook Files\archive_2020.pst"
 ```
 
 ### Step 3: 인덱스 구축
 
 ```bash
-python scripts/build_index.py
+uv run build-index
 ```
 
 ### Step 4: 동작 확인
 
 ```bash
 # 검색 테스트
-mailgrep "테스트" --limit 5
+uv run mailgrep "테스트" --limit 5
 
 # 뷰어 테스트
-mailview
+uv run mailview
 
 # 통계 확인
-mailstat summary
+uv run mailstat summary
 ```
 
 ---
@@ -396,13 +418,13 @@ for pst in "$PST_DIR"/*.pst; do
     echo "==============================="
     echo "변환: $pst"
     echo "==============================="
-    python scripts/pst2md.py \
+    uv run pst2md \
         --pst "$pst" \
         --resume       # 중단 후 재개 가능
 done
 
 # 전체 완료 후 인덱스 재구축
-python scripts/build_index.py --rebuild
+uv run build-index --rebuild
 ```
 
 **Windows (PowerShell):**
@@ -413,11 +435,11 @@ Get-ChildItem "$pstDir\*.pst" | ForEach-Object {
     Write-Host "==============================="
     Write-Host "변환: $($_.FullName)"
     Write-Host "==============================="
-    python scripts\pst2md.py --pst "$($_.FullName)" --resume
+    uv run pst2md --pst "$($_.FullName)" --resume
 }
 
 # 전체 완료 후 인덱스 재구축
-python scripts\build_index.py --rebuild
+uv run build-index --rebuild
 ```
 
 ### cutoff 날짜 지정 (12개월 이전만 변환)
@@ -1103,11 +1125,64 @@ python -m pywin32_postinstall -install
 
 ```bash
 # 첨부 파일 용량 확인
-mailstat attachments
+uv run mailstat attachments
 
 # 대용량 첨부를 외부 스토리지로 이동
 mv ~/mail-archive/attachments_large /mnt/external/
 ln -s /mnt/external/attachments_large ~/mail-archive/attachments_large
+```
+
+---
+
+### --resume이 재실행 시 다시 변환함
+
+`--resume` 재실행에도 `converted: N, skipped: 0` 이 반복되는 경우:
+
+1. `.state.json` 의 `done_msgids` 가 비어있는지 확인:
+   ```bash
+   cat ~/mail-archive/.state.json
+   ```
+
+2. **v0.3.0 이전 버전**에서 변환된 아카이브인 경우, Message-ID 없는 아이템(Calendar, Contacts 등)은
+   상태가 저장되지 않아 발생합니다. v0.3.0 이상으로 업데이트 후 재실행하면 수정됩니다:
+   ```bash
+   # 최신 코드 Pull 후
+   uv run pst2md --pst archive.pst --resume
+   # 이후 실행부터 정상 skip
+   ```
+
+---
+
+### 첨부 파일명이 attachment_0 등으로 표시됨
+
+pypff 가 첨부 파일명을 `None` 으로 반환하는 경우입니다.
+주로 OLE 임베디드 객체(Calendar 첨부, Outlook 항목 포함)에서 발생합니다.
+v0.3.0 이상에서는 MAPI record_sets 에서 표시 이름(`PR_DISPLAY_NAME`)을 추출합니다.
+
+일반 이메일 첨부(`ATTACH_BY_VALUE`)는 `PR_ATTACH_LONG_FILENAME` 에서 파일명이 정상 추출됩니다.
+
+---
+
+### Android / Termux 환경
+
+uv 는 `aarch64-linux-android` 를 지원하지 않습니다. pip를 직접 사용합니다.
+
+```bash
+# ncurses 버전 충돌 해결 후 Python 설치
+pkg install -y ncurses=6.5.20240831-3
+pkg install -y python
+
+# ld 심링크 (libpff-python 빌드에 필요)
+ln -sf $(which lld) $(dirname $(which lld))/ld
+ln -sf $(which llvm-ar) $(dirname $(which llvm-ar))/ar
+
+# 의존성 설치
+pip install click tomli tqdm html2text beautifulsoup4 \
+    python-slugify chardet python-dateutil mail-parser
+pip install libpff-python   # 소스 빌드 (5분 내외)
+
+# 실행
+python scripts/pst2md.py --pst tests/data/test.pst --dry-run
 ```
 
 ---
@@ -1140,8 +1215,9 @@ Outlook이 열려 있는 환경에서 win32com 백엔드를 사용하면 Outlook
 **Q. 같은 PST를 두 번 변환하면 중복이 생기나요?**
 
 Message-ID 기반 멱등성이 보장됩니다.
-동일한 메일은 두 번 변환해도 파일이 1개만 유지됩니다.
-`--resume` 옵션이 없어도 `build-index` 단계에서 `INSERT OR IGNORE`로 중복을 걸러냅니다.
+`--resume` 사용 시 `.state.json` 의 done_msgids 로 이미 변환된 메일을 건너뜁니다.
+Calendar · Contacts 같이 Message-ID 가 없는 아이템도 발신자+제목+날짜 조합의 결정론적 해시로 중복을 방지합니다.
+`build-index` 단계에서도 `INSERT OR IGNORE` 로 DB 중복을 최종 방어합니다.
 
 ---
 
@@ -1168,6 +1244,7 @@ pst2md --pst "C:\Users\YOU\archive.pst" --backend readpst
 `~/mail-archive/attachments/<sha256 앞 2자>/<sha256전체>.<확장자>` 경로에 저장됩니다.
 SHA-256 기반 CAS(Content-Addressable Storage)로 동일 파일은 1개만 저장됩니다.
 50MB 초과 파일은 `attachments_large/`에 별도 저장됩니다.
+원본 파일명에 확장자가 없으면 magic bytes(파일 앞부분 바이너리 패턴)로 PNG · JPG · PDF 등을 자동 추론해 확장자를 붙입니다.
 
 ---
 

@@ -538,14 +538,33 @@ def convert_pst(
         backend.open(str(pst_path))
 
         log.info("PST 폴더 트리 스캔 중...")
-        all_msgs = list(backend.iter_messages())
+        all_msgs = list(tqdm(
+            backend.iter_messages(),
+            unit="msg",
+            desc="  스캔",
+            dynamic_ncols=True,
+            leave=False,
+        ))
         log.info("총 %d개 메시지 발견", len(all_msgs))
 
-        for folder_path, msg in tqdm(all_msgs, unit="msg", desc=pst_filename):
+        with tqdm(
+            all_msgs,
+            unit="msg",
+            desc=pst_filename,
+            dynamic_ncols=True,
+        ) as pbar:
+          for folder_path, msg in pbar:
             stats["total"] += 1
 
             if folder_re and not folder_re.search(folder_path):
                 stats["skipped"] += 1
+                pbar.set_postfix_str(
+                    f"변환={stats['converted']} "
+                    f"skip={stats['skipped']} "
+                    f"오류={stats['error']} "
+                    f"첨부={stats['attachments']}",
+                    refresh=False,
+                )
                 continue
 
             raw_msgid = decode_mime_header(msg.message_identifier or "")
@@ -575,6 +594,13 @@ def convert_pst(
                     )
                 if check_msgid in done_ids:
                     stats["skipped"] += 1
+                    pbar.set_postfix_str(
+                        f"변환={stats['converted']} "
+                        f"skip={stats['skipped']} "
+                        f"오류={stats['error']} "
+                        f"첨부={stats['attachments']}",
+                        refresh=False,
+                    )
                     continue
 
             if cutoff:
@@ -586,6 +612,13 @@ def convert_pst(
                     )
                     if msg_dt >= cutoff:
                         stats["skipped"] += 1
+                        pbar.set_postfix_str(
+                            f"변환={stats['converted']} "
+                            f"skip={stats['skipped']} "
+                            f"오류={stats['error']} "
+                            f"첨부={stats['attachments']}",
+                            refresh=False,
+                        )
                         continue
 
             meta = message_to_md(
@@ -594,14 +627,20 @@ def convert_pst(
 
             if meta is None:
                 stats["error"] += 1
-                continue
+            else:
+                stats["converted"]   += 1
+                stats["attachments"] += meta.get("n_attachments", 0)
+                index_rows.append(meta)
+                # meta["msgid"]는 PST ID 또는 생성 ID로 항상 설정됨
+                done_ids.add(meta["msgid"])
 
-            stats["converted"]   += 1
-            stats["attachments"] += meta.get("n_attachments", 0)
-            index_rows.append(meta)
-
-            # meta["msgid"]는 PST ID 또는 생성 ID로 항상 설정됨
-            done_ids.add(meta["msgid"])
+            pbar.set_postfix_str(
+                f"변환={stats['converted']} "
+                f"skip={stats['skipped']} "
+                f"오류={stats['error']} "
+                f"첨부={stats['attachments']}",
+                refresh=False,
+            )
 
     if not dry_run:
         save_state(out_root, done_ids)

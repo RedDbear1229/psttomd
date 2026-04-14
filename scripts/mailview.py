@@ -447,7 +447,8 @@ def main(
             cfg["archive"]["root"] = archive
         db = db_path(cfg)
         if body_filter:
-            paths = get_paths_from_query(["--body", body_filter])
+            archive_arg = ["--archive", cfg["archive"]["root"]] if archive else []
+            paths = get_paths_from_query(archive_arg + ["--body", body_filter])
         else:
             paths = get_recent_paths(db)
         _print_fzf_lines(paths, db)

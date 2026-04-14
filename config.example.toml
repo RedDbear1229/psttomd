@@ -10,6 +10,10 @@
 # 변환된 Markdown 파일이 저장될 루트 경로.
 # ~ 는 홈 디렉터리로 자동 확장됩니다.
 #
+# CLI 로 설정하려면:
+#   pst2md-config set-output ~/mail-archive
+#   pst2md --pst archive.pst --out ~/mail-archive --save-out
+#
 # Linux/WSL 예시:
 root = "~/mail-archive"
 

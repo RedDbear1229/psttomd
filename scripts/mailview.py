@@ -43,6 +43,26 @@ from lib.config import load_config, db_path, archive_root, detect_platform
 
 
 # ---------------------------------------------------------------------------
+# fzf 컬럼 헤더
+# ---------------------------------------------------------------------------
+# get_label() 포맷: f"{date}  {sender:<28}  {subject}"
+#   date   = 10 cols  (YYYY-MM-DD)
+#   sender = 28 cols  (left-padded ASCII)
+#   subject = 나머지
+#
+# 한글은 터미널에서 2칸 너비로 출력되므로 시각적 정렬에 맞게 공백을 조정한다.
+#   '날짜'   = 4 visual cols → date   10 cols 맞추기 위해 6 spaces 추가
+#   '보낸사람' = 8 visual cols → sender 28 cols 맞추기 위해 20 spaces 추가
+_FZF_COL_HEADER: str = (
+    "날짜" + " " * 6           # 4 + 6 = 10 visual cols (date 열)
+    + "  "                     # 2 cols gap
+    + "보낸사람" + " " * 20    # 8 + 20 = 28 visual cols (sender 열)
+    + "  "                     # 2 cols gap
+    + "제목"
+)
+
+
+# ---------------------------------------------------------------------------
 # 도구 경로 확인
 # ---------------------------------------------------------------------------
 
@@ -396,6 +416,7 @@ def main(query, from_filter, after, before, folder, thread, archive, _open_att):
         encoding="utf-8", prefix="mailview_",
     )
     try:
+        tmp_file.write(f"{_FZF_COL_HEADER}\t\n")
         for p in valid_paths:
             label = get_label(p, db)
             tmp_file.write(f"{label}\t{p}\n")
@@ -434,6 +455,7 @@ def main(query, from_filter, after, before, folder, thread, archive, _open_att):
             "--ansi", "--reverse",
             "--delimiter", "\t",
             "--with-nth", "1",
+            "--header-lines", "1",
             "--header", "Enter:열람  Ctrl-P:원문  Ctrl-O:편집  Ctrl-A:첨부열기  ESC:종료",
             "--preview", preview_cmd,
             "--preview-window", "right:60%:wrap",

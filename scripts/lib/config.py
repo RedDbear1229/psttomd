@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -183,6 +184,50 @@ def db_path(cfg: dict[str, Any] | None = None) -> Path:
         <archive_root>/index.sqlite 경로
     """
     return archive_root(cfg) / "index.sqlite"
+
+
+def save_archive_root(path: str | Path) -> Path:
+    """config.toml 의 archive.root 값을 업데이트한다.
+
+    파일이 없으면 init_config_file() 로 먼저 생성한 뒤 path 를 기록한다.
+    파일이 있으면 ``root = "..."`` 줄만 정규식으로 교체하여 나머지 주석을 보존한다.
+
+    Args:
+        path: 저장할 아카이브 루트 경로.
+              Windows 역슬래시는 슬래시로 변환하여 TOML 호환성을 유지한다.
+
+    Returns:
+        업데이트된 config.toml 파일 경로.
+    """
+    config_file = Path.home() / ".pst2md" / "config.toml"
+    normalized = str(path).replace("\\", "/")
+
+    if not config_file.exists():
+        # 파일이 없으면 기본 템플릿 생성 후 경로 반영
+        init_config_file(archive=normalized)
+        return config_file
+
+    original = config_file.read_text(encoding="utf-8")
+
+    # [archive] 섹션 내의 root = "..." 줄을 교체한다.
+    # 섹션 전환([xxx])이 나타나기 전까지만 치환하도록 두 단계로 처리한다.
+    archive_section_re = re.compile(
+        r"(\[archive\].*?)(\broot\s*=\s*\"[^\"]*\")",
+        re.DOTALL,
+    )
+    new_line = f'root = "{normalized}"'
+    updated, count = archive_section_re.subn(
+        lambda m: m.group(1) + new_line,
+        original,
+        count=1,
+    )
+
+    if count == 0:
+        # [archive] 섹션 자체가 없으면 파일 끝에 추가
+        updated = original.rstrip() + f"\n\n[archive]\n{new_line}\n"
+
+    config_file.write_text(updated, encoding="utf-8")
+    return config_file
 
 
 def init_config_file(

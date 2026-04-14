@@ -1,7 +1,3 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.backends.legacy:build"
-
 [project]
 name = "pst2md"
 version = "0.2.0"
@@ -36,6 +32,8 @@ build-index     = "scripts.build_index:main"
 enrich          = "scripts.enrich:main"
 verify          = "scripts.verify_integrity:main"
 archive-monthly = "scripts.archive_monthly:main"
+# 설정 관리
+pst2md-config   = "scripts.config_cli:main"
 # CLI 도구 (크로스플랫폼 Python 버전)
 mailgrep        = "scripts.mailgrep:main"
 mailview        = "scripts.mailview:main"

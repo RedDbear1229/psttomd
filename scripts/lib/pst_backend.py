@@ -196,11 +196,21 @@ class PypffBackend(PSTBackend):
 
     def _iter_folder(self, folder, path: str) -> Iterator[tuple[str, MessageData]]:
         """폴더를 재귀적으로 순회하며 메시지를 yield 한다."""
-        name = folder.name or "Root"
+        try:
+            name = folder.name or "Root"
+        except Exception:
+            name = "Root"
         current = f"{path}/{name}" if path else name
 
         # 현재 폴더의 메시지 순회
-        for i in range(folder.number_of_sub_messages):
+        # number_of_sub_messages 자체가 libpff 오류를 던질 수 있으므로 try 로 감쌈
+        try:
+            n_msgs = folder.number_of_sub_messages
+        except Exception as e:
+            log.warning("폴더 메시지 수 읽기 실패 [%s]: %s", current, e)
+            n_msgs = 0
+
+        for i in range(n_msgs):
             try:
                 raw = folder.get_sub_message(i)
                 yield current, self._to_msgdata(raw)
@@ -208,41 +218,81 @@ class PypffBackend(PSTBackend):
                 log.warning("메시지 읽기 실패 [%s][%d]: %s", current, i, e)
 
         # 하위 폴더 재귀
-        for i in range(folder.number_of_sub_folders):
+        try:
+            n_folders = folder.number_of_sub_folders
+        except Exception as e:
+            log.warning("하위 폴더 수 읽기 실패 [%s]: %s", current, e)
+            n_folders = 0
+
+        for i in range(n_folders):
             try:
                 sub = folder.get_sub_folder(i)
                 yield from self._iter_folder(sub, current)
             except Exception as e:
                 log.warning("폴더 읽기 실패 [%s][%d]: %s", current, i, e)
 
-    def _to_msgdata(self, raw) -> MessageData:
-        """pypff 메시지 객체를 MessageData 로 변환한다."""
-        def _get(attr: str, default=""):
-            return getattr(raw, attr, default) or default
+    @staticmethod
+    def _safe_get(raw, attr: str, default=None):
+        """pypff 객체의 속성을 안전하게 읽는다.
 
-        n_att = int(_get("number_of_attachments", 0))
-        attachments = []
+        getattr 의 3인자 형식은 AttributeError 만 잡는다.
+        pypff 는 내부 libpff 오류(손상된 PST, 누락된 descriptor node 등)를
+        AttributeError 가 아닌 자체 예외로 전파하므로, 모든 예외를 잡아야 한다.
+
+        Args:
+            raw:     pypff 메시지/첨부 객체.
+            attr:    읽을 속성 이름.
+            default: 읽기 실패 시 반환할 기본값.
+
+        Returns:
+            속성 값 또는 default.
+        """
+        try:
+            val = getattr(raw, attr)
+            # None 과 falsy 바이트(b"")는 그대로 반환 — 빈 본문도 유효한 값
+            return val if val is not None else default
+        except Exception:
+            return default
+
+    def _to_msgdata(self, raw) -> MessageData:
+        """pypff 메시지 객체를 MessageData 로 변환한다.
+
+        pypff_message_get_number_of_attachments 등 libpff 저수준 오류가
+        개별 필드 접근 시 발생할 수 있으므로 모든 필드를 독립적으로 try/except 로 감싼다.
+        """
+        sg = self._safe_get  # 타이핑 편의용 별칭
+
+        # 첨부 수: libpff descriptor node 읽기 실패가 가장 빈번하게 발생
+        try:
+            n_att = int(sg(raw, "number_of_attachments", 0) or 0)
+        except Exception:
+            n_att = 0
+            log.debug("첨부 수 읽기 실패 (손상된 노드): %r", sg(raw, "subject", ""))
+
+        attachments: list = []
         for i in range(n_att):
             try:
                 attachments.append(raw.get_attachment(i))
-            except Exception:
+            except Exception as e:
+                log.debug("첨부 객체 로드 실패 [%d]: %s", i, e)
                 attachments.append(None)
 
-        submit_time = getattr(raw, "client_submit_time", None)
+        # client_submit_time 은 datetime 또는 None 이어야 함
+        submit_time = sg(raw, "client_submit_time", None)
 
         return MessageData(
-            message_identifier    = str(_get("message_identifier")),
-            subject               = str(_get("subject")),
-            sender_name           = str(_get("sender_name")),
-            sender_email_address  = str(_get("sender_email_address")),
-            display_to            = str(_get("display_to")),
-            display_cc            = str(_get("display_cc")),
+            message_identifier    = str(sg(raw, "message_identifier",    "") or ""),
+            subject               = str(sg(raw, "subject",               "") or ""),
+            sender_name           = str(sg(raw, "sender_name",           "") or ""),
+            sender_email_address  = str(sg(raw, "sender_email_address",  "") or ""),
+            display_to            = str(sg(raw, "display_to",            "") or ""),
+            display_cc            = str(sg(raw, "display_cc",            "") or ""),
             client_submit_time    = submit_time if isinstance(submit_time, datetime) else None,
-            html_body             = _get("html_body", None),
-            plain_text_body       = _get("plain_text_body", None),
-            rtf_body              = _get("rtf_body", None),
-            in_reply_to_identifier= str(_get("in_reply_to_identifier")),
-            references            = str(_get("references")),
+            html_body             = sg(raw, "html_body",       None),
+            plain_text_body       = sg(raw, "plain_text_body", None),
+            rtf_body              = sg(raw, "rtf_body",        None),
+            in_reply_to_identifier= str(sg(raw, "in_reply_to_identifier", "") or ""),
+            references            = str(sg(raw, "references",             "") or ""),
             number_of_attachments = n_att,
             _attachments          = attachments,
         )
@@ -251,9 +301,20 @@ class PypffBackend(PSTBackend):
         raw_att = msg._attachments[index]
         if raw_att is None:
             return f"attachment_{index}", b""
-        name = str(getattr(raw_att, "name", "") or f"attachment_{index}")
-        size = int(getattr(raw_att, "size", 0) or 0)
-        data = raw_att.read_buffer(size) if size else b""
+
+        # name, size, read_buffer 모두 libpff 오류 가능성 있음
+        try:
+            name = str(self._safe_get(raw_att, "name", "") or f"attachment_{index}")
+        except Exception:
+            name = f"attachment_{index}"
+
+        try:
+            size = int(self._safe_get(raw_att, "size", 0) or 0)
+            data = raw_att.read_buffer(size) if size > 0 else b""
+        except Exception as e:
+            log.debug("첨부 데이터 읽기 실패 [%s]: %s", name, e)
+            data = b""
+
         return name, data
 
     def close(self) -> None:

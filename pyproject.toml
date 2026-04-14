@@ -28,10 +28,6 @@ linux = [
 win32 = [
     "pywin32",
 ]
-dev = [
-    "pytest>=8",
-    "pytest-cov",
-]
 
 [project.scripts]
 # 변환/인덱스/위키화
@@ -45,6 +41,22 @@ mailgrep        = "scripts.mailgrep:main"
 mailview        = "scripts.mailview:main"
 mailstat        = "scripts.mailstat:main"
 
+# ── uv 전용 설정 ──────────────────────────────────────────────────────────
+[tool.uv]
+# 이 패키지 자체도 editable 모드로 설치 (scripts 패키지 import 가능)
+package = true
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["scripts*"]
+
+# ── 개발 의존성 (uv dependency-groups) ───────────────────────────────────
+# uv sync --group dev  →  pytest 등 개발 도구 설치
+# pip install -e ".[dev]" 와 달리 배포 의존성과 명확히 분리됨
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.4",       # 린터 + 포매터
+    "mypy>=1.10",      # 타입 체커
+]

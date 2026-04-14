@@ -7,22 +7,23 @@
 sudo apt update && sudo apt install -y \
     libpff-dev python3-pff \
     sqlite3 fzf ripgrep bat \
-    pandoc
+    curl
 
 # glow (Markdown 렌더러)
 sudo snap install glow
 # 또는 Go 설치된 경우:
 # go install github.com/charmbracelet/glow@latest
 
-# Python 의존성
-cd ~/mailtomd
-python3 -m venv .venv && source .venv/bin/activate
-pip install libpff-python beautifulsoup4 html2text python-slugify tqdm \
-            mail-parser python-dateutil chardet
+# uv 설치 (Python 환경 관리)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.bashrc   # 또는 새 터미널 열기
 
-# CLI 도구를 PATH에 추가 (~/.bashrc 또는 ~/.zshrc)
+# Python 의존성 설치 (pyproject.toml 기준)
+cd ~/mailtomd
+uv sync --extra linux   # libpff-python 포함
+
+# 환경변수 (~/.bashrc 또는 ~/.zshrc)
 export MAIL_ARCHIVE="$HOME/mail-archive"
-export PATH="$HOME/mailtomd/scripts:$PATH"
 ```
 
 ## Phase 1 — PoC (첫 PST 변환)
@@ -32,18 +33,18 @@ export PATH="$HOME/mailtomd/scripts:$PATH"
 PST="/mnt/c/Users/YOU/Documents/Outlook/archive_2020.pst"
 
 # 2. dry-run으로 통계 확인
-python scripts/pst2md.py --pst "$PST" --dry-run
+uv run pst2md --pst "$PST" --dry-run
 
 # 3. 실제 변환
-python scripts/pst2md.py --pst "$PST" --out ~/mail-archive
+uv run pst2md --pst "$PST" --out ~/mail-archive
 
 # 4. 인덱스 구축
-python scripts/build_index.py --archive ~/mail-archive
+uv run build-index --archive ~/mail-archive
 
 # 5. 검색 테스트
-mailgrep "견적" --limit 5
-mailview "프로젝트"
-mailstat summary
+uv run mailgrep "견적" --limit 5
+uv run mailview "프로젝트"
+uv run mailstat summary
 ```
 
 ## Phase 2 — 전체 PST 배치 변환
@@ -55,21 +56,21 @@ ls -lh "/mnt/c/Users/YOU/Documents/Outlook/"*.pst
 # 각 PST 순차 변환 (--resume으로 중단 재개 가능)
 for pst in /mnt/c/Users/YOU/Documents/Outlook/*.pst; do
     echo "=== 변환: $pst ==="
-    python scripts/pst2md.py --pst "$pst" --out ~/mail-archive --resume
+    uv run pst2md --pst "$pst" --out ~/mail-archive --resume
 done
 
 # 인덱스 재구축
-python scripts/build_index.py --archive ~/mail-archive --rebuild
+uv run build-index --archive ~/mail-archive --rebuild
 ```
 
 ## 월간 운영 배치
 
 ```bash
 # dry-run 먼저 확인
-./scripts/archive_monthly.sh --pst "/mnt/c/.../Outlook Files/outlook.pst"
+uv run archive-monthly --pst "/mnt/c/.../Outlook Files/outlook.pst"
 
 # 이상 없으면 실행
-./scripts/archive_monthly.sh --pst "/mnt/c/.../Outlook Files/outlook.pst" --execute
+uv run archive-monthly --pst "/mnt/c/.../Outlook Files/outlook.pst" --execute
 
 # Outlook에서 수동 작업:
 # 1. 변환된 날짜 범위 메일 선택 → 삭제
@@ -80,22 +81,22 @@ python scripts/build_index.py --archive ~/mail-archive --rebuild
 
 ```bash
 # 전체 MOC 재생성
-python scripts/enrich.py --archive ~/mail-archive
+uv run enrich --archive ~/mail-archive
 
 # 개별 갱신
-python scripts/enrich.py --people    # 인물 페이지만
-python scripts/enrich.py --threads   # 스레드 페이지만
-python scripts/enrich.py --projects  # 프로젝트 페이지만
+uv run enrich --people    # 인물 페이지만
+uv run enrich --threads   # 스레드 페이지만
+uv run enrich --projects  # 프로젝트 페이지만
 ```
 
 ## 무결성 검증
 
 ```bash
 # 샘플 200개 검증 (기본)
-python scripts/verify_integrity.py --archive ~/mail-archive
+uv run verify --archive ~/mail-archive
 
 # 전체 검증
-python scripts/verify_integrity.py --archive ~/mail-archive --full
+uv run verify --archive ~/mail-archive --full
 ```
 
 ## Windows 백업 (rsync)

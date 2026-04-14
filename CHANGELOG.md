@@ -6,6 +6,20 @@
 
 ---
 
+## [0.2.1] - 2026-04-14
+
+### Changed
+- **개발 환경 관리를 uv 로 일괄 전환**
+  - `pyproject.toml`: `[dependency-groups]` 추가 (pytest, ruff, mypy), `[tool.uv]` 섹션 추가
+  - `install_linux.sh`: `python3 -m venv` + `pip` → `uv sync --extra linux`
+  - `install_windows.ps1`: `pip install` → `uv sync --extra win32`, winget 으로 uv 자동 설치
+  - `CONTRIBUTING.md`: 개발 환경 설정 uv 명령어로 전면 교체
+  - `CLAUDE.md`: 자주 쓰는 커맨드 `python scripts/*.py` → `uv run <entry-point>`
+  - `docs/runbook.md`: 모든 실행 명령 `uv run` 기준으로 업데이트
+  - `.gitignore`: `uv.lock` 커밋 대상 유지 (애플리케이션 재현 가능 빌드)
+
+---
+
 ## [0.2.0] - 2026-04-14
 
 ### Added

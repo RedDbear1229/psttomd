@@ -2,22 +2,68 @@
 
 ## 개발 환경 설정
 
+의존성 관리는 **[uv](https://docs.astral.sh/uv)** 를 사용합니다.
+
+### uv 설치
+
+```bash
+# Linux / WSL / macOS
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 또는 winget
+winget install astral-sh.uv
+```
+
+### 저장소 클론 및 의존성 설치
+
 ```bash
 git clone https://github.com/RedDbear1229/psttomd.git
 cd psttomd
 
-# 가상환경 생성 및 의존성 설치
-python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+# 기본 의존성 + 개발 도구 (pytest, ruff, mypy)
+uv sync --group dev
 
-# 기본 의존성
-pip install -e ".[dev]"
+# Linux/WSL: pypff 백엔드 포함
+uv sync --group dev --extra linux
 
-# Linux/WSL 추가 (pypff 백엔드)
-pip install -e ".[linux]"
+# Windows: pywin32 포함
+uv sync --group dev --extra win32
+```
 
-# Windows 추가 (win32com 백엔드)
-pip install -e ".[win32]"
+`uv sync` 는 `pyproject.toml` 을 읽어 `.venv/` 를 자동 생성합니다.
+별도로 `python -m venv` 를 실행하거나 pip 를 쓸 필요가 없습니다.
+
+### 명령 실행
+
+```bash
+# venv 활성화 없이 바로 실행
+uv run pst2md --pst /path/to/archive.pst --dry-run
+uv run mailgrep "계약서"
+uv run pytest tests/ -v
+
+# 또는 venv 활성화 후 직접 실행
+source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
+pst2md --pst /path/to/archive.pst --dry-run
+pytest tests/ -v
+```
+
+### 자주 쓰는 개발 명령
+
+```bash
+# 린트 (ruff)
+uv run ruff check scripts/
+
+# 자동 포맷
+uv run ruff format scripts/
+
+# 타입 체크 (mypy)
+uv run mypy scripts/
+
+# 테스트 + 커버리지
+uv run pytest tests/ --cov=scripts --cov-report=term-missing
 ```
 
 ---
@@ -57,18 +103,6 @@ PR 은 `dev` 브랜치로 보내주세요.
 - 경로 처리: `Path` 객체 사용, 문자열 변환 시 `replace("\\", "/")`
 - 플랫폼 분기: `detect_platform()` 사용 (`"linux"` / `"wsl"` / `"windows"`)
 - 새 백엔드 추가 시 `PSTBackend` ABC 구현 + `get_backend()` 팩토리 등록
-
-### 테스트
-
-```bash
-# 단위 테스트 실행
-pytest tests/ -v
-
-# 커버리지 확인
-pytest tests/ --cov=scripts --cov-report=term-missing
-```
-
-실제 PST 파일이 없어도 `--dry-run` 과 샘플 MD 파일로 대부분 테스트 가능합니다.
 
 ---
 

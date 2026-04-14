@@ -111,7 +111,7 @@ def get_paths_from_query(args: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def get_label(path: str, db: Path) -> str:
-    """DB 에서 파일 경로에 해당하는 '날짜  발신자  제목' 레이블을 반환한다."""
+    """DB 에서 파일 경로에 해당하는 ANSI 컬러 '날짜  발신자  제목' 레이블을 반환한다."""
     try:
         conn = sqlite3.connect(str(db))
         row = conn.execute(
@@ -126,7 +126,18 @@ def get_label(path: str, db: Path) -> str:
             date    = (row[0] or "")[:10]
             sender  = (row[1] or "")[:28]
             subject = (row[2] or "")[:55]
-            return f"{date}  {sender:<28}  {subject}"
+            # ANSI 컬러: 날짜=청록, 발신자=초록, 제목=기본색
+            # fzf --ansi 플래그가 이미 활성화돼 있으므로 코드가 그대로 렌더링된다.
+            # sender 는 ANSI 코드를 포함하므로 시각적 28칸을 맞추기 위해
+            # 공백을 직접 계산한다 (ANSI 코드는 출력 폭에 포함되지 않음).
+            sender_plain = f"{sender:<28}"
+            return (
+                f"\033[36m{date}\033[0m"          # 청록
+                f"  "
+                f"\033[32m{sender_plain}\033[0m"  # 초록
+                f"  "
+                f"{subject}"
+            )
     except Exception:
         pass
     return path
@@ -141,6 +152,9 @@ def build_fzf_preview_cmd(glow_path: str, bat_path: Optional[str]) -> str:
 
     fzf 입력 형식: "레이블\\t파일경로" — {2} 가 경로를 가리킨다.
 
+    우선순위: glow(마크다운 렌더링·컬러) → bat(구문 강조) → type/cat(플레인)
+    bat 은 Ctrl-P 원문 보기 전용으로 분리한다.
+
     경로 인용부호 전략:
       - Linux  : {2} 를 작은따옴표로 감쌈 → 공백·특수문자 안전
       - Windows: {2} 를 큰따옴표로 감쌈  → cmd.exe 공백 처리
@@ -148,7 +162,7 @@ def build_fzf_preview_cmd(glow_path: str, bat_path: Optional[str]) -> str:
 
     Args:
         glow_path: glow 실행 파일 절대 경로.
-        bat_path:  bat 실행 파일 절대 경로 (없으면 None).
+        bat_path:  bat 실행 파일 절대 경로 (없으면 None, 폴백으로만 사용).
 
     Returns:
         fzf --preview 옵션에 전달할 명령어 문자열.
@@ -159,18 +173,18 @@ def build_fzf_preview_cmd(glow_path: str, bat_path: Optional[str]) -> str:
         # cmd.exe: 큰따옴표, 2>nul, type
         item = '"{2}"'
         null_redirect = "2>nul"
-        fallback = 'type "{2}"'
-        if bat_path:
-            return f'"{bat_path}" --style=plain --color=always {item} {null_redirect} || {fallback}'
+        # glow 우선: 마크다운을 렌더링하여 컬러로 표시
+        # bat 은 Ctrl-P 원문 보기 전용으로 사용
+        fallback = f'"{bat_path}" --style=plain --color=always {item} {null_redirect}' if bat_path else f'type {item}'
         return f'"{glow_path}" -s dark {item} {null_redirect} || {fallback}'
     else:
         # sh: 작은따옴표, 2>/dev/null, cat
         # fzf 가 {2} 를 확장한 뒤 작은따옴표로 감싸므로 공백 경로 안전
         item = "'{2}'"
         null_redirect = "2>/dev/null"
-        fallback = "cat '{2}'"
-        if bat_path:
-            return f"'{bat_path}' --style=plain --color=always {item} {null_redirect} || {fallback}"
+        # glow 우선: 마크다운을 렌더링하여 컬러로 표시
+        # bat 은 Ctrl-P 원문 보기 전용으로 사용
+        fallback = f"'{bat_path}' --style=plain --color=always {item} {null_redirect}" if bat_path else f"cat {item}"
         return f"'{glow_path}' -s dark {item} {null_redirect} || {fallback}"
 
 

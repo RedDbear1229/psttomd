@@ -1,0 +1,47 @@
+# mailtomd 설정 파일 예시
+# 이 파일을 ~/.mailtomd/config.toml 로 복사한 뒤 수정하세요.
+#
+# Linux/WSL:  cp config.example.toml ~/.mailtomd/config.toml
+# Windows:    copy config.example.toml %USERPROFILE%\.mailtomd\config.toml
+
+# ── 아카이브 루트 디렉터리 ──────────────────────────────────────────────────
+[archive]
+
+# 변환된 Markdown 파일이 저장될 루트 경로.
+# ~ 는 홈 디렉터리로 자동 확장됩니다.
+#
+# Linux/WSL 예시:
+root = "~/mail-archive"
+
+# Windows 예시 (역슬래시 대신 슬래시 사용):
+# root = "C:/Users/YourName/mail-archive"
+
+# ── PST 파서 백엔드 ────────────────────────────────────────────────────────
+# auto     — 플랫폼에 따라 자동 선택 (linux/wsl → pypff, windows → win32com)
+# pypff    — libpff-python 직접 파싱 (Linux/WSL, 속도 최고)
+# readpst  — readpst CLI 경유 EML 파싱 (pypff 설치 어려울 때 대안)
+# win32com — Outlook COM API (Windows Native, Outlook 설치 필수)
+pst_backend = "auto"
+
+# ── 외부 도구 경로 ────────────────────────────────────────────────────────
+# 도구가 PATH 에 있으면 이름만 지정해도 됩니다.
+# 특정 경로를 지정하려면 절대 경로를 사용하세요.
+[tools]
+fzf     = "fzf"
+glow    = "glow"
+bat     = "bat"
+sqlite3 = "sqlite3"
+rg      = "rg"       # ripgrep (mailgrep 내부 검색에 사용)
+
+# Windows 경로 예시:
+# fzf  = "C:/tools/fzf/fzf.exe"
+# glow = "C:/tools/glow/glow.exe"
+
+# ── Windows win32com 전용 설정 ────────────────────────────────────────────
+# pst_backend = "win32com" 일 때만 적용됩니다.
+[win32com]
+
+# Outlook 프로파일 이름.
+# 빈 문자열("")이면 Outlook 기본 프로파일을 사용합니다.
+# 여러 프로파일이 있을 때 특정 프로파일을 지정하려면 이름을 입력하세요.
+outlook_profile = ""

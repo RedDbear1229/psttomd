@@ -210,40 +210,54 @@ pip install click tomli tqdm html2text beautifulsoup4 \
 ln -sf $(which lld) $(dirname $(which lld))/ld
 pip install libpff-python
 
-# 실행
-python scripts/pst2md.py --pst tests/data/test.pst --dry-run
+# 패키지 editable 설치 (CLI 커맨드를 PATH 에 등록)
+pip install -e .
+
+# 이후 python scripts/... 없이 바로 실행 가능
+pst2md --pst tests/data/test.pst --dry-run
 ```
 
 ---
 
 ## 자주 쓰는 커맨드
 
+`pip install -e .` 로 설치한 뒤에는 `python scripts/...` 없이 바로 실행한다.
+
 ```bash
 # 변환 테스트 (dry-run) — 샘플 PST
-python scripts/pst2md.py --pst tests/data/test.pst --out ~/mail-archive --dry-run
+pst2md --pst tests/data/test.pst --out ~/mail-archive --dry-run
 
 # 변환 + 재실행 (resume 테스트)
-python scripts/pst2md.py --pst tests/data/test.pst --out ~/mail-archive
-python scripts/pst2md.py --pst tests/data/test.pst --out ~/mail-archive --resume
+pst2md --pst tests/data/test.pst --out ~/mail-archive
+pst2md --pst tests/data/test.pst --out ~/mail-archive --resume
 # 결과: skipped: 4 (중복 변환 없음)
 
-# uv 환경에서
-uv run pst2md --pst /path/to/archive.pst --dry-run
+# 출력 경로 config.toml 에 영구 저장
+pst2md --pst /path/to/archive.pst --save-out
+
+# 설정 확인 / 변경
+pst2md-config show
+pst2md-config set-output ~/mail-archive
+pst2md-config init --force
 
 # 인덱스 재구축
-uv run build-index --archive ~/mail-archive --rebuild
+build-index --archive ~/mail-archive --rebuild
 
 # 무결성 검증 (샘플 200개)
-uv run verify --archive ~/mail-archive
+verify --archive ~/mail-archive
 
 # 검색
-uv run mailgrep "계약서" --from 홍길동 --after 2023-01-01
+mailgrep "계약서" --from 홍길동 --after 2023-01-01
+mailgrep "invoice" --body "payment" --json
 
 # 뷰어
-uv run mailview "견적"
+mailview "견적"
 
 # 통계
-uv run mailstat summary
+mailstat summary
+
+# uv 환경(Linux/WSL/Windows)에서도 동일
+uv run pst2md --pst /path/to/archive.pst --dry-run
 ```
 
 ---

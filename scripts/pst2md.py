@@ -548,9 +548,33 @@ def convert_pst(
                 continue
 
             raw_msgid = decode_mime_header(msg.message_identifier or "")
-            if resume and raw_msgid and raw_msgid in done_ids:
-                stats["skipped"] += 1
-                continue
+
+            # resume 체크: PST에 Message-ID가 없는 경우(캘린더·연락처 등)도
+            # message_to_md()와 동일한 결정론적 생성 ID로 중복 검사
+            if resume:
+                if raw_msgid:
+                    check_msgid = raw_msgid
+                else:
+                    _from_addr = normalize_address(
+                        decode_mime_header(msg.sender_email_address or "")
+                    )
+                    _subject = (
+                        decode_mime_header(msg.subject or "").strip() or "(제목 없음)"
+                    )
+                    _dt_iso = date_to_iso(
+                        msg.client_submit_time
+                        if isinstance(msg.client_submit_time, datetime)
+                        else None
+                    )
+                    _seed = f"{_from_addr}{_subject}{_dt_iso}"
+                    check_msgid = (
+                        f"<generated-"
+                        f"{hashlib.sha1(_seed.encode()).hexdigest()[:16]}"
+                        f"@pst2md>"
+                    )
+                if check_msgid in done_ids:
+                    stats["skipped"] += 1
+                    continue
 
             if cutoff:
                 date_val = msg.client_submit_time
@@ -575,16 +599,30 @@ def convert_pst(
             stats["attachments"] += meta.get("n_attachments", 0)
             index_rows.append(meta)
 
-            if raw_msgid:
-                done_ids.add(raw_msgid)
+            # meta["msgid"]는 PST ID 또는 생성 ID로 항상 설정됨
+            done_ids.add(meta["msgid"])
 
     if not dry_run:
         save_state(out_root, done_ids)
         jsonl_path = out_root / "index_staging.jsonl"
-        mode = "a" if resume else "w"
-        with jsonl_path.open(mode, encoding="utf-8") as f:
-            for row in index_rows:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        if resume and jsonl_path.exists():
+            # 이미 기록된 msgid 읽어 중복 방지
+            existing_msgids: set[str] = set()
+            for line in jsonl_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        existing_msgids.add(json.loads(line)["msgid"])
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+            with jsonl_path.open("a", encoding="utf-8") as f:
+                for row in index_rows:
+                    if row["msgid"] not in existing_msgids:
+                        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        else:
+            with jsonl_path.open("w", encoding="utf-8") as f:
+                for row in index_rows:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     return stats
 

@@ -61,6 +61,22 @@ _FZF_COL_HEADER: str = (
     + "제목"
 )
 
+# 도움말 팝업에 표시할 키 바인딩 목록 (fzf --disabled 로 표시)
+_HELP_LINES: list[str] = [
+    "  키 바인딩 도움말 — mailview",
+    "  " + "─" * 40,
+    "  Enter      glow 로 메일 열람",
+    "  Ctrl-P     bat / less 로 원문 표시",
+    "  Ctrl-O     $EDITOR 로 편집",
+    "  Ctrl-A     첨부 파일 열기",
+    "  Ctrl-B     현재 검색어로 본문 검색 후 목록 갱신",
+    "  Ctrl-R     전체 목록 초기화 (최근 100통)",
+    "  ?          이 도움말",
+    "  ESC        닫기 / 종료",
+    "  " + "─" * 40,
+    "  검색창 텍스트 입력 후 Ctrl-B → 본문에서 해당 키워드 검색",
+]
+
 
 # ---------------------------------------------------------------------------
 # 도구 경로 확인
@@ -141,6 +157,27 @@ def get_label(path: str, db: Path) -> str:
     except Exception:
         pass
     return path
+
+
+# ---------------------------------------------------------------------------
+# fzf reload 전용 출력기
+# ---------------------------------------------------------------------------
+
+def _print_fzf_lines(paths: list[str], db: Path) -> None:
+    """fzf reload 명령이 사용할 ``레이블\\t경로`` 형식을 stdout 에 출력한다.
+
+    첫 줄은 항상 컬럼 헤더(_FZF_COL_HEADER)를 출력한다.
+    존재하지 않는 경로는 건너뛴다.
+
+    Args:
+        paths: Markdown 파일 경로 문자열 목록.
+        db:    인덱스 SQLite 경로 (get_label 용).
+    """
+    print(f"{_FZF_COL_HEADER}\t", flush=True)
+    for p in paths:
+        if Path(p).exists():
+            label = get_label(p, db)
+            print(f"{label}\t{p}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -377,16 +414,43 @@ def handle_open_attachments(md_path: str) -> None:
 @click.option("--before",  default="", metavar="YYYY-MM-DD")
 @click.option("--folder",  default="", help="폴더 필터")
 @click.option("--thread",  default="", help="스레드 ID")
+@click.option("--body",    "body_filter", default="", help="본문 내용 전용 검색")
 @click.option("--archive", default="", help="아카이브 루트")
-# fzf execute() 에서 Ctrl-A 로 호출되는 내부 옵션 (hidden)
-@click.option("--open-att", "_open_att", default="", hidden=True,
+# ── 내부 히든 모드 (fzf execute/reload 에서 호출) ──────────────────────
+@click.option("--open-att",  "_open_att",   default="", hidden=True,
               help="내부용: 지정 MD 파일의 첨부 파일 열기")
-def main(query, from_filter, after, before, folder, thread, archive, _open_att):
+@click.option("--fzf-input", "_fzf_input",  is_flag=True, hidden=True,
+              help="내부용: fzf reload 용 레이블\\t경로 출력")
+@click.option("--show-help", "_show_help",  is_flag=True, hidden=True,
+              help="내부용: 키 바인딩 도움말 출력")
+def main(
+    query, from_filter, after, before, folder, thread,
+    body_filter, archive, _open_att, _fzf_input, _show_help,
+):
     """fzf + glow 인터랙티브 메일 뷰어."""
 
     # ── Ctrl-A 첨부 열기 모드 ────────────────────────────────────────────
     if _open_att:
         handle_open_attachments(_open_att)
+        return
+
+    # ── 도움말 출력 모드 (? 키 → fzf --disabled 팝업) ───────────────────
+    if _show_help:
+        for line in _HELP_LINES:
+            click.echo(line)
+        return
+
+    # ── fzf reload 출력 모드 (Ctrl-B / Ctrl-R) ───────────────────────────
+    if _fzf_input:
+        cfg = load_config()
+        if archive:
+            cfg["archive"]["root"] = archive
+        db = db_path(cfg)
+        if body_filter:
+            paths = get_paths_from_query(["--body", body_filter])
+        else:
+            paths = get_recent_paths(db)
+        _print_fzf_lines(paths, db)
         return
 
     # ── 일반 뷰어 모드 ───────────────────────────────────────────────────
@@ -408,13 +472,14 @@ def main(query, from_filter, after, before, folder, thread, archive, _open_att):
     bat_path  = _check_tool("bat", cfg)
 
     # ── 경로 목록 수집 ────────────────────────────────────────────────────
-    if query or from_filter or after or before or folder or thread:
+    if query or from_filter or after or before or folder or thread or body_filter:
         extra: list[str] = []
-        if from_filter: extra += ["--from", from_filter]
-        if after:       extra += ["--after", after]
-        if before:      extra += ["--before", before]
-        if folder:      extra += ["--folder", folder]
-        if thread:      extra += ["--thread", thread]
+        if from_filter:  extra += ["--from",   from_filter]
+        if after:        extra += ["--after",  after]
+        if before:       extra += ["--before", before]
+        if folder:       extra += ["--folder", folder]
+        if thread:       extra += ["--thread", thread]
+        if body_filter:  extra += ["--body",   body_filter]
         paths = get_paths_from_query([query] + extra if query else extra)
     else:
         paths = get_recent_paths(db)
@@ -436,10 +501,13 @@ def main(query, from_filter, after, before, folder, thread, archive, _open_att):
             tmp_file.write(f"{label}\t{p}\n")
         tmp_file.close()
 
-        preview_cmd = build_fzf_preview_cmd(glow_path, bat_path)
-        editor      = get_editor()
+        preview_cmd  = build_fzf_preview_cmd(glow_path, bat_path)
+        editor       = get_editor()
+        script_path  = str(Path(__file__).resolve())
+        py           = sys.executable
+        archive_path = str(cfg["archive"]["root"])
 
-        # ── execute() 바인딩 경로 인용부호 ────────────────────────────────
+        # ── execute()/reload() 바인딩 경로 인용부호 ───────────────────────
         # fzf 는 execute("cmd {2}") 에서 {2} 를 그대로 치환한다.
         # 공백 포함 경로를 안전하게 전달하려면 플랫폼별 인용부호가 필요하다.
         #
@@ -447,34 +515,91 @@ def main(query, from_filter, after, before, folder, thread, archive, _open_att):
         #   Windows (cmd /c) : 큰따옴표   "{2}"
         #
         # Python/스크립트 경로도 동일하게 인용부호로 감싼다.
-        script_path = str(Path(__file__).resolve())
-        py          = sys.executable
-
         if plat == "windows":
-            q = '"'   # cmd.exe 인용부호
-            # cmd.exe 에서 && 는 지원되지 않으므로 단일 명령만 사용
-            open_att_cmd   = f'{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}'
-            editor_cmd     = f'{q}{editor}{q} {q}{{2}}{q}'
-            bat_cmd        = f'{q}{bat_path}{q} --style=full {q}{{2}}{q}' if bat_path else None
-            pager_cmd      = f'more {q}{{2}}{q}'
+            q = '"'
+            open_att_cmd  = f'{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}'
+            editor_cmd    = f'{q}{editor}{q} {q}{{2}}{q}'
+            bat_cmd       = f'{q}{bat_path}{q} --style=full {q}{{2}}{q}' if bat_path else None
+            pager_cmd     = f'more {q}{{2}}{q}'
+            # fzf-input reload: --body {q} 는 fzf 가 검색창 텍스트로 치환
+            body_reload   = (
+                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
+                f'--body {q}{{q}}{q} --archive {q}{archive_path}{q}'
+            )
+            reset_reload  = (
+                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
+                f'--archive {q}{archive_path}{q}'
+            )
+            help_popup    = (
+                f'{q}{py}{q} {q}{script_path}{q} --show-help '
+                f'| {q}{fzf_path}{q} --disabled --no-info '
+                f'--border=rounded --border-label=" 키 바인딩 도움말 " '
+                f'--color "border:#7aa2f7,label:#7aa2f7" '
+                f'--header {q}ESC 로 닫기{q}'
+            )
         else:
-            q = "'"   # sh 인용부호
-            open_att_cmd   = f"{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}"
-            editor_cmd     = f"{q}{editor}{q} {q}{{2}}{q}"
-            bat_cmd        = f"{q}{bat_path}{q} --style=full {q}{{2}}{q}" if bat_path else None
-            pager_cmd      = f"less {q}{{2}}{q}"
+            q = "'"
+            open_att_cmd  = f"{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}"
+            editor_cmd    = f"{q}{editor}{q} {q}{{2}}{q}"
+            bat_cmd       = f"{q}{bat_path}{q} --style=full {q}{{2}}{q}" if bat_path else None
+            pager_cmd     = f"less {q}{{2}}{q}"
+            body_reload   = (
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
+                f"--body {q}{{q}}{q} --archive {q}{archive_path}{q}"
+            )
+            reset_reload  = (
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
+                f"--archive {q}{archive_path}{q}"
+            )
+            help_popup    = (
+                f"{q}{py}{q} {q}{script_path}{q} --show-help "
+                f"| {q}{fzf_path}{q} --disabled --no-info "
+                f"--border=rounded --border-label={q} 키 바인딩 도움말 {q} "
+                f"--color {q}border:#7aa2f7,label:#7aa2f7{q} "
+                f"--header {q}ESC 로 닫기{q}"
+            )
 
         fzf_cmd = [
             fzf_path,
-            "--ansi", "--reverse",
+            # ── Telescope 스타일 레이아웃 ────────────────────────────────
+            "--ansi",
+            "--layout=reverse",
+            "--border=rounded",
+            "--border-label= mailview ",
+            "--prompt", "검색> ",
+            "--info=inline",
+            # ── Tokyo Night 계열 색상 ────────────────────────────────────
+            "--color",
+            (
+                "bg:#1a1b26,bg+:#292e42,fg:#c0caf5,fg+:#c0caf5,"
+                "hl:#7aa2f7,hl+:#7aa2f7,border:#3b4261,label:#7aa2f7,"
+                "prompt:#7aa2f7,pointer:#ff9e64,marker:#9ece6a,"
+                "info:#9ece6a,header:#565f89,spinner:#7aa2f7"
+            ),
+            # ── 목록 구성 ────────────────────────────────────────────────
             "--delimiter", "\t",
             "--with-nth", "1",
             "--header-lines", "1",
-            "--header", "Enter:열람  Ctrl-P:원문  Ctrl-O:편집  Ctrl-A:첨부열기  ESC:종료",
+            "--header",
+            "Enter:열람  Ctrl-P:원문  Ctrl-O:편집  Ctrl-A:첨부  "
+            "Ctrl-B:본문검색  Ctrl-R:초기화  ?:도움말  ESC:종료",
+            # ── 미리보기 ─────────────────────────────────────────────────
             "--preview", preview_cmd,
-            "--preview-window", "right:60%:wrap",
+            "--preview-window", "right:55%:border-left:wrap",
+            # ── 키 바인딩 ────────────────────────────────────────────────
             "--bind", f"ctrl-o:execute({editor_cmd})+abort",
-            "--bind", f"ctrl-a:execute({open_att_cmd})",   # fzf 유지, 첨부 피커 실행
+            "--bind", f"ctrl-a:execute({open_att_cmd})",
+            "--bind", (
+                f"ctrl-b:change-prompt(본문검색> )"
+                f"+reload({body_reload})"
+                f"+clear-query"
+            ),
+            "--bind", (
+                f"ctrl-r:change-prompt(검색> )"
+                f"+reload({reset_reload})"
+                f"+clear-query"
+            ),
+            "--bind", f"?:execute({help_popup})",
         ]
 
         if bat_cmd:

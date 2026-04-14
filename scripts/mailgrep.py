@@ -71,15 +71,21 @@ def build_query(
     limit: int,
     output_json: bool,
     paths_only: bool,
+    body_filter: str = "",
 ) -> tuple[str, list]:
     """검색 조건에 맞는 SQL 쿼리와 바인딩 파라미터를 생성한다.
 
     FTS5 전문 검색과 메타 필드 필터(from / to / 날짜 / 폴더)를
     AND 조건으로 조합한다.
 
+    FTS5 컬럼 한정 문법:
+      query       → 모든 컬럼(subject, from_name, from_addr, to_addrs, body) 검색
+      body_filter → body 컬럼만 검색 (``body:term``)
+      둘 다 있으면 AND 로 조합 (``term body:bodyterm``)
+
     Args:
         conn:        활성 SQLite 연결 (현재는 사용하지 않지만 확장을 위해 유지).
-        query:       전문 검색어. 빈 문자열이면 FTS5 를 사용하지 않는다.
+        query:       전문 검색어. 빈 문자열이면 FTS5 전체 컬럼 검색을 건너뜀.
         from_filter: 발신자 부분 일치 필터.
         to_filter:   수신자 부분 일치 필터.
         after:       "YYYY-MM-DD" 이후 날짜 필터.
@@ -89,16 +95,26 @@ def build_query(
         limit:       최대 결과 수.
         output_json: True 이면 JSON 객체를 SELECT.
         paths_only:  True 이면 파일 경로만 SELECT.
+        body_filter: 본문 전용 검색어. ``body:term`` 형식으로 FTS5 에 추가.
 
     Returns:
         (sql_string, params_list) 튜플.
     """
     conditions: list[str] = []
     params: list = []
-    use_fts = bool(query)
 
+    # FTS5 MATCH 절 구성
+    # query  → 전체 컬럼 검색 (term)
+    # body_filter → 본문 컬럼 한정 검색 (body:term)
+    fts_parts: list[str] = []
+    if query:
+        fts_parts.append(_escape_fts5(query))
+    if body_filter:
+        fts_parts.append(f"body:{_escape_fts5(body_filter)}")
+
+    use_fts = bool(fts_parts)
     if use_fts:
-        fts_q = _escape_fts5(query)
+        fts_q = " ".join(fts_parts)
         # FTS5 조인: messages_fts.rowid = messages.id
         conditions.append("fts.rowid = m.id AND messages_fts MATCH ?")
         params.append(fts_q)
@@ -163,15 +179,20 @@ def build_query(
 @click.option("--before",    default="", metavar="YYYY-MM-DD", help="이 날짜 이전")
 @click.option("--folder",    default="", help="폴더 경로 부분 일치")
 @click.option("--thread",    default="", help="스레드 ID 정확 일치")
+@click.option("--body",      "body_filter", default="", help="본문 내용 전용 검색 (FTS5 body: 컬럼)")
 @click.option("--limit",     default=50, show_default=True, help="최대 결과 수")
 @click.option("--json",      "output_json", is_flag=True, help="JSON Lines 출력")
 @click.option("--paths-only", is_flag=True, help="파일 경로만 출력 (fzf 파이프용)")
 @click.option("--archive",   default="", help="아카이브 루트 (기본: config.toml)")
 def main(
     query, from_filter, to_filter, after, before, folder, thread,
-    limit, output_json, paths_only, archive,
+    body_filter, limit, output_json, paths_only, archive,
 ):
-    """SQLite FTS5 기반 메일 아카이브 검색."""
+    """SQLite FTS5 기반 메일 아카이브 검색.
+
+    QUERY 는 제목·발신자·본문 전체를 검색한다.
+    본문만 검색하려면 --body 를 사용한다.
+    """
     cfg = load_config()
     if archive:
         cfg["archive"]["root"] = archive
@@ -183,7 +204,7 @@ def main(
         sys.exit(1)
 
     # 검색 조건이 전혀 없으면 도움말 안내
-    if not query and not any([from_filter, to_filter, after, before, folder, thread]):
+    if not query and not any([from_filter, to_filter, after, before, folder, thread, body_filter]):
         click.echo("키워드 또는 필터를 지정하세요. --help 참고", err=True)
         sys.exit(1)
 
@@ -192,7 +213,7 @@ def main(
 
     sql, params = build_query(
         conn, query, from_filter, to_filter, after, before,
-        folder, thread, limit, output_json, paths_only,
+        folder, thread, limit, output_json, paths_only, body_filter,
     )
 
     try:

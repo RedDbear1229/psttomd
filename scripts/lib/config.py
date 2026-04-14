@@ -1,7 +1,7 @@
 """
 설정 로더 + 플랫폼 감지
 
-설정 파일 위치: ~/.mailtomd/config.toml
+설정 파일 위치: ~/.pst2md/config.toml
 환경변수 MAIL_ARCHIVE 가 설정되어 있으면 archive.root를 오버라이드한다.
 
 사용 예:
@@ -126,7 +126,7 @@ def load_config() -> dict[str, Any]:
 
     우선순위 (높은 순):
         1. 환경변수 MAIL_ARCHIVE  → archive.root 덮어씀
-        2. ~/.mailtomd/config.toml
+        2. ~/.pst2md/config.toml
         3. DEFAULT_CONFIG
 
     Returns:
@@ -134,7 +134,7 @@ def load_config() -> dict[str, Any]:
     """
     cfg: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
 
-    config_path = Path.home() / ".mailtomd" / "config.toml"
+    config_path = Path.home() / ".pst2md" / "config.toml"
     if config_path.exists():
         if tomllib is None:
             # tomllib/tomli 미설치 시 경고만 출력하고 기본값으로 계속 진행
@@ -190,7 +190,7 @@ def init_config_file(
     backend: str = "",
     force: bool = False,
 ) -> Path:
-    """~/.mailtomd/config.toml 을 생성한다.
+    """~/.pst2md/config.toml 을 생성한다.
 
     이미 파일이 존재하면 아무 작업도 하지 않는다(force=True 시 덮어씀).
     설치 스크립트(install_linux.sh, install_windows.ps1)에서 호출한다.
@@ -203,7 +203,7 @@ def init_config_file(
     Returns:
         생성된(또는 기존) config.toml 경로
     """
-    config_dir = Path.home() / ".mailtomd"
+    config_dir = Path.home() / ".pst2md"
     config_dir.mkdir(parents=True, exist_ok=True)
     config_file = config_dir / "config.toml"
 
@@ -223,7 +223,7 @@ def init_config_file(
 
     created_at = datetime.now().strftime("%Y-%m-%d")
     content = (
-        f"# mailtomd 설정 파일\n"
+        f"# pst2md 설정 파일\n"
         f"# 생성: {created_at}  플랫폼: {plat}\n"
         f"\n"
         f"[archive]\n"

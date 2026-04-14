@@ -1,8 +1,8 @@
-# mailtomd 설정 파일 예시
-# 이 파일을 ~/.mailtomd/config.toml 로 복사한 뒤 수정하세요.
+# pst2md 설정 파일 예시
+# 이 파일을 ~/.pst2md/config.toml 로 복사한 뒤 수정하세요.
 #
-# Linux/WSL:  cp config.example.toml ~/.mailtomd/config.toml
-# Windows:    copy config.example.toml %USERPROFILE%\.mailtomd\config.toml
+# Linux/WSL:  cp config.example.toml ~/.pst2md/config.toml
+# Windows:    copy config.example.toml %USERPROFILE%\.pst2md\config.toml
 
 # ── 아카이브 루트 디렉터리 ──────────────────────────────────────────────────
 [archive]

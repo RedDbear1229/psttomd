@@ -20,8 +20,8 @@ winget install astral-sh.uv
 ### 저장소 클론 및 의존성 설치
 
 ```bash
-git clone https://github.com/RedDbear1229/psttomd.git
-cd psttomd
+git clone https://github.com/RedDbear1229/pst2md.git
+cd pst2md
 
 # 기본 의존성 + 개발 도구 (pytest, ruff, mypy)
 uv sync --group dev

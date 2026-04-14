@@ -344,7 +344,7 @@ def message_to_md(
 
         if not msgid:
             seed  = f"{from_addr}{subject}{date_to_iso(dt)}"
-            msgid = f"<generated-{hashlib.sha1(seed.encode()).hexdigest()[:16]}@mailtomd>"
+            msgid = f"<generated-{hashlib.sha1(seed.encode()).hexdigest()[:16]}@pst2md>"
 
         thread_id = make_thread_id(references, in_reply_to, msgid)
 

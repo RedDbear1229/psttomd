@@ -1,4 +1,4 @@
-# mailtomd
+# pst2md
 
 Outlook PST 파일을 Markdown으로 변환해 CLI와 Obsidian으로 관리하는 아카이브 시스템.
 
@@ -61,7 +61,7 @@ mailstat summary
 | WSL (대안) | readpst CLI | `readpst` |
 | Windows Native | Outlook COM API | `win32com` |
 
-`~/.mailtomd/config.toml`에서 변경:
+`~/.pst2md/config.toml`에서 변경:
 ```toml
 pst_backend = "auto"   # 플랫폼에 따라 자동 선택
 ```
@@ -71,7 +71,7 @@ pst_backend = "auto"   # 플랫폼에 따라 자동 선택
 ## 파일 구조
 
 ```
-mailtomd/
+pst2md/
 ├── scripts/
 │   ├── pst2md.py            # PST → MD 변환기
 │   ├── build_index.py       # SQLite FTS5 인덱스

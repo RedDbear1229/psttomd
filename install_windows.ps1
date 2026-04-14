@@ -23,7 +23,7 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "mailtomd Windows 설치 (uv)"
+Write-Host "pst2md Windows 설치 (uv)"
 Write-Host "  설치 위치: $ScriptDir"
 Write-Host "  아카이브:  $ArchiveRoot"
 Write-Host "  PST 백엔드: $Backend"
@@ -111,14 +111,14 @@ Write-Host "  Python: $pyVer"
 Write-Host ""
 Write-Host "[4/4] 설정 파일 생성..." -ForegroundColor Yellow
 
-$ConfigDir = "$env:USERPROFILE\.mailtomd"
+$ConfigDir = "$env:USERPROFILE\.pst2md"
 New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
 $ConfigFile = "$ConfigDir\config.toml"
 $ArchiveForToml = $ArchiveRoot -replace '\\', '/'
 
 if (-not (Test-Path $ConfigFile)) {
     $ConfigContent = @"
-# mailtomd 설정 파일
+# pst2md 설정 파일
 # 생성: $(Get-Date -Format 'yyyy-MM-dd')  플랫폼: windows
 
 [archive]

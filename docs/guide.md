@@ -1,4 +1,4 @@
-# mailtomd 사용 설명서
+# pst2md 사용 설명서
 
 > Outlook PST 파일을 Markdown으로 변환해 CLI와 Obsidian으로 관리하는 아카이브 시스템
 
@@ -126,8 +126,8 @@ winget (Windows Package Manager)
 #### 자동 설치 (권장)
 
 ```bash
-git clone <repo> ~/mailtomd
-cd ~/mailtomd
+git clone <repo> ~/pst2md
+cd ~/pst2md
 chmod +x install_linux.sh
 ./install_linux.sh
 ```
@@ -138,7 +138,7 @@ chmod +x install_linux.sh
 2. glow 설치 (snap 또는 직접 다운로드)
 3. Python 가상환경 생성 (`.venv/`)
 4. `pip install -e ".[linux]"` 실행
-5. `~/.mailtomd/config.toml` 초기 생성
+5. `~/.pst2md/config.toml` 초기 생성
 
 #### 수동 설치
 
@@ -154,7 +154,7 @@ sudo snap install glow
 # go install github.com/charmbracelet/glow@latest
 
 # 3. Python 가상환경
-cd ~/mailtomd
+cd ~/pst2md
 python3 -m venv .venv
 source .venv/bin/activate
 
@@ -174,10 +174,10 @@ print(init_config_file())
 `~/.bashrc` 또는 `~/.zshrc` 에 추가:
 
 ```bash
-# mailtomd
-source ~/mailtomd/.venv/bin/activate
+# pst2md
+source ~/pst2md/.venv/bin/activate
 export MAIL_ARCHIVE="$HOME/mail-archive"
-export PATH="$HOME/mailtomd/scripts:$PATH"
+export PATH="$HOME/pst2md/scripts:$PATH"
 ```
 
 적용:
@@ -199,7 +199,7 @@ PowerShell을 **관리자 권한**으로 열고 실행:
 Set-ExecutionPolicy Bypass -Scope Process -Force
 
 # 설치
-cd C:\Users\YOU\mailtomd
+cd C:\Users\YOU\pst2md
 .\install_windows.ps1
 ```
 
@@ -226,7 +226,7 @@ winget install BurntSushi.ripgrep.MSVC
 winget install SQLite.SQLite
 
 # 2. Python 패키지
-cd C:\Users\YOU\mailtomd
+cd C:\Users\YOU\pst2md
 pip install -e ".[win32]"
 
 # 3. pywin32 초기화 (win32com 백엔드 사용 시 필수)
@@ -257,7 +257,7 @@ $env:MAIL_ARCHIVE = "C:\Users\YOU\mail-archive"
 
 ## 4. 설정 파일 (config.toml)
 
-위치: `~/.mailtomd/config.toml` (Linux) / `%USERPROFILE%\.mailtomd\config.toml` (Windows)
+위치: `~/.pst2md/config.toml` (Linux) / `%USERPROFILE%\.pst2md\config.toml` (Windows)
 
 ### 전체 옵션
 

@@ -19,7 +19,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 source ~/.bashrc   # 또는 새 터미널 열기
 
 # Python 의존성 설치 (pyproject.toml 기준)
-cd ~/mailtomd
+cd ~/pst2md
 uv sync --extra linux   # libpff-python 포함
 
 # 환경변수 (~/.bashrc 또는 ~/.zshrc)

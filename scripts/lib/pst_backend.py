@@ -289,7 +289,7 @@ class ReadpstBackend(PSTBackend):
                 "설치: sudo apt install pst-utils"
             )
         self._pst_path = path
-        self._tmpdir = tempfile.mkdtemp(prefix="mailtomd_readpst_")
+        self._tmpdir = tempfile.mkdtemp(prefix="pst2md_readpst_")
         import subprocess
         log.info("readpst 로 EML 추출 중: %s → %s", path, self._tmpdir)
         result = subprocess.run(

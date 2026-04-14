@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ARCHIVE_ROOT="${MAIL_ARCHIVE:-$HOME/mail-archive}"
 
 echo "========================================"
-echo "mailtomd Linux/WSL 설치 (uv)"
+echo "pst2md Linux/WSL 설치 (uv)"
 echo "  설치 위치: $SCRIPT_DIR"
 echo "  아카이브:  $ARCHIVE_ROOT"
 echo "========================================"

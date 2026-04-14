@@ -1,4 +1,4 @@
-# CLAUDE.md — mailtomd 프로젝트 컨텍스트
+# CLAUDE.md — pst2md 프로젝트 컨텍스트
 
 이 파일은 Claude Code 가 이 저장소에서 작업할 때 참조하는 가이드입니다.
 
@@ -15,7 +15,7 @@ SQLite FTS5 인덱스 + fzf/glow CLI + Obsidian 으로 검색·열람하는
 ## 디렉터리 구조
 
 ```
-mailtomd/
+pst2md/
 ├── scripts/
 │   ├── pst2md.py            # PST → MD 변환 메인 (CID 교체, CAS, frontmatter)
 │   ├── build_index.py       # SQLite FTS5 인덱스 빌더 (증분 / 전체 재구축)

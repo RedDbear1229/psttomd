@@ -24,7 +24,7 @@
 
 ### Added
 - **크로스플랫폼 지원** (Windows Native / WSL / Linux)
-  - `scripts/lib/config.py`: `detect_platform()`, `load_config()`, `~/.mailtomd/config.toml`
+  - `scripts/lib/config.py`: `detect_platform()`, `load_config()`, `~/.pst2md/config.toml`
   - `scripts/lib/pst_backend.py`: PST 파서 추상화 (`PypffBackend` / `ReadpstBackend` / `Win32ComBackend`)
 - **Python CLI** (click 기반, 3종)
   - `scripts/mailgrep.py`: SQLite FTS5 전문 검색

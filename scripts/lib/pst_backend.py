@@ -23,10 +23,10 @@ pst2md.py 등 상위 코드는 백엔드 종류와 무관하게 동작한다.
 from __future__ import annotations
 
 import base64
-import calendar
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from abc import ABC, abstractmethod
@@ -290,7 +290,6 @@ class ReadpstBackend(PSTBackend):
             )
         self._pst_path = path
         self._tmpdir = tempfile.mkdtemp(prefix="pst2md_readpst_")
-        import subprocess
         log.info("readpst 로 EML 추출 중: %s → %s", path, self._tmpdir)
         result = subprocess.run(
             ["readpst", "-e", "-D", "-o", self._tmpdir, path],
@@ -332,10 +331,13 @@ class ReadpstBackend(PSTBackend):
         if dt and dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
 
-        # mail-parser 는 HTML 본문을 body, 평문을 text_plain 에 담는다
-        html_body = mail.body.encode("utf-8") if mail.body else None
-        text_body = None
-        if hasattr(mail, "text_plain") and mail.text_plain:
+        # mail-parser: text_html → HTML, text_plain → 평문으로 직접 분리
+        # mail.body 는 HTML 없으면 평문을 반환하므로 html_body 에 넣으면 안 됨
+        html_body: Optional[bytes] = None
+        if getattr(mail, "text_html", None):
+            html_body = "\n".join(mail.text_html).encode("utf-8")
+        text_body: Optional[bytes] = None
+        if getattr(mail, "text_plain", None):
             text_body = "\n".join(mail.text_plain).encode("utf-8")
 
         att_list = mail.attachments or []
@@ -364,7 +366,7 @@ class ReadpstBackend(PSTBackend):
         if isinstance(payload, str):
             try:
                 payload = base64.b64decode(payload)
-            except (ValueError, Exception):
+            except Exception:
                 payload = payload.encode("utf-8", errors="replace")
         return name, payload
 
@@ -528,7 +530,9 @@ class Win32ComBackend(PSTBackend):
             return f"attachment_{index}", b""
         name = str(getattr(raw_att, "FileName", "") or f"attachment_{index}")
         # COM API 는 SaveAsFile 로만 내용을 얻을 수 있어 임시 파일 경유
-        tmp = tempfile.mktemp(suffix=Path(name).suffix or ".bin")
+        # mktemp() 는 TOCTOU 경쟁 조건 위험 → mkstemp() 사용
+        fd, tmp = tempfile.mkstemp(suffix=Path(name).suffix or ".bin")
+        os.close(fd)  # SaveAsFile 이 직접 파일을 열므로 fd 즉시 닫기
         try:
             raw_att.SaveAsFile(tmp)
             data = Path(tmp).read_bytes()
@@ -542,7 +546,8 @@ class Win32ComBackend(PSTBackend):
     def close(self) -> None:
         try:
             # 마운트한 PST 스토어를 Outlook 에서 제거
-            if hasattr(self, "_store") and self._store:
+            # open() 도중 실패했을 경우 _store / _ns 가 없을 수 있음
+            if hasattr(self, "_store") and self._store and hasattr(self, "_ns"):
                 self._ns.RemoveStore(self._store.GetRootFolder())
         except Exception:
             pass

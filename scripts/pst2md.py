@@ -85,6 +85,21 @@ IMAGE_EXTS: frozenset[str] = frozenset({
 # HTML → Markdown 변환기
 # ---------------------------------------------------------------------------
 
+def _yaml_str(value: str) -> str:
+    """YAML 인라인 문자열 값에서 큰따옴표를 작은따옴표로 치환한다.
+
+    frontmatter 의 'key: "value"' 형식에서 value 안에 큰따옴표가 있으면
+    YAML 파싱 오류가 발생하므로 작은따옴표로 대체한다.
+
+    Args:
+        value: 원본 문자열.
+
+    Returns:
+        큰따옴표가 작은따옴표로 교체된 문자열.
+    """
+    return value.replace('"', "'")
+
+
 def _make_html2text() -> html2text.HTML2Text:
     """html2text 변환기 인스턴스를 초기화한다."""
     h = html2text.HTML2Text()
@@ -424,19 +439,19 @@ def message_to_md(
 
         frontmatter = (
             f'---\n'
-            f'msgid: "{msgid}"\n'
+            f'msgid: "{_yaml_str(msgid)}"\n'
             f'date: {date_to_iso(dt)}\n'
-            f'from: "{from_raw}"\n'
+            f'from: "{_yaml_str(from_raw)}"\n'
             f'to: {to_yaml}\n'
             f'cc: {cc_yaml}\n'
-            f'subject: "{subject.replace(chr(34), chr(39))}"\n'
-            f'folder: "{folder_path}"\n'
-            f'thread: "{thread_id}"\n'
-            f'in_reply_to: "{in_reply_to}"\n'
+            f'subject: "{_yaml_str(subject)}"\n'
+            f'folder: "{_yaml_str(folder_path)}"\n'
+            f'thread: "{_yaml_str(thread_id)}"\n'
+            f'in_reply_to: "{_yaml_str(in_reply_to)}"\n'
             f'references: {refs_yaml}\n'
             f'{att_fm_section}\n'
             f'tags: {tags_yaml}\n'
-            f'source_pst: "{pst_filename}"\n'
+            f'source_pst: "{_yaml_str(pst_filename)}"\n'
             f'---'
         )
 
@@ -508,13 +523,6 @@ def convert_pst(
     done_ids: set[str] = load_state(out_root) if resume else set()
     folder_re = re.compile(folder_filter) if folder_filter else None
 
-    backend = get_backend(config)
-    backend.open(str(pst_path))
-
-    log.info("PST 폴더 트리 스캔 중...")
-    all_msgs = list(backend.iter_messages())
-    log.info("총 %d개 메시지 발견", len(all_msgs))
-
     stats = {
         "total": 0, "converted": 0,
         "skipped": 0, "error": 0, "attachments": 0,
@@ -524,45 +532,51 @@ def convert_pst(
     if not dry_run:
         (out_root / ERRORS_DIR).mkdir(parents=True, exist_ok=True)
 
-    for folder_path, msg in tqdm(all_msgs, unit="msg", desc=pst_filename):
-        stats["total"] += 1
+    # 컨텍스트 매니저로 감싸 예외 발생 시에도 backend.close() 가 반드시 호출됨
+    with get_backend(config) as backend:
+        backend.open(str(pst_path))
 
-        if folder_re and not folder_re.search(folder_path):
-            stats["skipped"] += 1
-            continue
+        log.info("PST 폴더 트리 스캔 중...")
+        all_msgs = list(backend.iter_messages())
+        log.info("총 %d개 메시지 발견", len(all_msgs))
 
-        raw_msgid = decode_mime_header(msg.message_identifier or "")
-        if resume and raw_msgid and raw_msgid in done_ids:
-            stats["skipped"] += 1
-            continue
+        for folder_path, msg in tqdm(all_msgs, unit="msg", desc=pst_filename):
+            stats["total"] += 1
 
-        if cutoff:
-            date_val = msg.client_submit_time
-            if isinstance(date_val, datetime):
-                msg_dt = (
-                    date_val if date_val.tzinfo
-                    else date_val.replace(tzinfo=timezone.utc)
-                )
-                if msg_dt >= cutoff:
-                    stats["skipped"] += 1
-                    continue
+            if folder_re and not folder_re.search(folder_path):
+                stats["skipped"] += 1
+                continue
 
-        meta = message_to_md(
-            msg, folder_path, out_root, pst_filename, backend, dry_run
-        )
+            raw_msgid = decode_mime_header(msg.message_identifier or "")
+            if resume and raw_msgid and raw_msgid in done_ids:
+                stats["skipped"] += 1
+                continue
 
-        if meta is None:
-            stats["error"] += 1
-            continue
+            if cutoff:
+                date_val = msg.client_submit_time
+                if isinstance(date_val, datetime):
+                    msg_dt = (
+                        date_val if date_val.tzinfo
+                        else date_val.replace(tzinfo=timezone.utc)
+                    )
+                    if msg_dt >= cutoff:
+                        stats["skipped"] += 1
+                        continue
 
-        stats["converted"]   += 1
-        stats["attachments"] += meta.get("n_attachments", 0)
-        index_rows.append(meta)
+            meta = message_to_md(
+                msg, folder_path, out_root, pst_filename, backend, dry_run
+            )
 
-        if raw_msgid:
-            done_ids.add(raw_msgid)
+            if meta is None:
+                stats["error"] += 1
+                continue
 
-    backend.close()
+            stats["converted"]   += 1
+            stats["attachments"] += meta.get("n_attachments", 0)
+            index_rows.append(meta)
+
+            if raw_msgid:
+                done_ids.add(raw_msgid)
 
     if not dry_run:
         save_state(out_root, done_ids)

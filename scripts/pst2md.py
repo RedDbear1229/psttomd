@@ -440,7 +440,7 @@ def message_to_md(
         frontmatter = (
             f'---\n'
             f'msgid: "{_yaml_str(msgid)}"\n'
-            f'date: {date_to_iso(dt)}\n'
+            f'date: {date_to_iso(dt) or "null"}\n'
             f'from: "{_yaml_str(from_raw)}"\n'
             f'to: {to_yaml}\n'
             f'cc: {cc_yaml}\n'

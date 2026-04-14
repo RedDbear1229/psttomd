@@ -26,6 +26,39 @@ from typing import Any
 #: 대용량 분류 임계값 — 이 크기 이상은 attachments_large 로 이동
 LARGE_THRESHOLD = 50 * 1024 * 1024   # 50 MB
 
+# magic bytes → 확장자 매핑 (파일명에 확장자 없을 때 폴백)
+_MAGIC_EXT: list[tuple[bytes, str]] = [
+    (b"\x89PNG\r\n\x1a\n",     ".png"),
+    (b"\xff\xd8\xff",           ".jpg"),
+    (b"GIF87a",                 ".gif"),
+    (b"GIF89a",                 ".gif"),
+    (b"RIFF",                   ".wav"),   # WAV/AVI — RIFF 공통 시그니처
+    (b"PK\x03\x04",             ".zip"),
+    (b"\x50\x4b\x05\x06",       ".zip"),
+    (b"%PDF",                   ".pdf"),
+    (b"\xd0\xcf\x11\xe0",       ".doc"),   # OLE2 (doc/xls/ppt)
+    (b"PK\x03\x04\x14\x00\x06", ".xlsx"),  # OOXML (xlsx/docx/pptx)
+    (b"\x1f\x8b",               ".gz"),
+    (b"BZh",                    ".bz2"),
+    (b"\x00\x00\x00\x0cftyp",   ".mp4"),
+    (b"\x42\x4d",               ".bmp"),
+]
+
+
+def _guess_ext(data: bytes) -> str:
+    """파일 앞부분 magic bytes 로 확장자를 추론한다.
+
+    Args:
+        data: 파일 바이트 (앞 16 바이트면 충분).
+
+    Returns:
+        ".pdf" 같은 소문자 확장자 문자열. 알 수 없으면 "" 반환.
+    """
+    for magic, ext in _MAGIC_EXT:
+        if data[:len(magic)] == magic:
+            return ext
+    return ""
+
 
 def _sanitize_filename(name: str) -> str:
     """첨부 파일명에서 경로 순회 및 OS 위험 문자를 제거한다.
@@ -79,6 +112,9 @@ def store_attachment(
     safe_name = _sanitize_filename(original_name)
     _, ext = os.path.splitext(safe_name)
     ext = ext.lower()
+    # 파일명에 확장자 없으면 magic bytes 로 추론
+    if not ext and data:
+        ext = _guess_ext(data)
 
     size = len(data)
     is_large = size >= LARGE_THRESHOLD

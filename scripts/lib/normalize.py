@@ -109,17 +109,24 @@ def safe_decode(data: bytes, hint_charset: Optional[str] = None) -> str:
 def normalize_address(raw: Optional[str]) -> str:
     """'홍길동 <hong@ex.com>' 형식에서 이메일 주소만 소문자로 추출한다.
 
+    "@" 가 없는 문자열은 이메일 주소로 간주하지 않으며 빈 문자열을 반환한다.
+    (예: pypff 가 반환하는 "Unknown" 같은 플레이스홀더를 이메일로 처리하지 않음)
+
     Args:
         raw: 원시 주소 문자열 (MIME 인코딩 포함 가능).
 
     Returns:
-        소문자 이메일 주소 문자열. 주소를 파싱할 수 없으면 입력 전체를 소문자로 반환.
+        소문자 이메일 주소 문자열. "@" 를 포함하지 않으면 "" 반환.
     """
     if not raw:
         return ""
     raw = decode_mime_header(raw)
     _, addr = parseaddr(raw)
-    return addr.lower().strip() if addr else raw.lower().strip()
+    addr = addr.strip()
+    # "@" 없는 문자열은 유효한 이메일 주소가 아님 (예: "Unknown", "John Doe")
+    if "@" not in addr:
+        return ""
+    return addr.lower()
 
 
 def parse_address_list(raw: Optional[str]) -> list[str]:
@@ -163,9 +170,14 @@ def address_display(raw: Optional[str]) -> str:
     raw = decode_mime_header(raw)
     name, addr = parseaddr(raw)
     name = name.strip()
-    addr = addr.lower().strip()
-    if name and addr:
-        return f"{name} <{addr}>"
+    # "@" 없는 addr은 이메일 주소가 아님 — display name 후보로 처리
+    if "@" in addr:
+        addr = addr.lower().strip()
+        if name and addr:
+            return f"{name} <{addr}>"
+        return addr or name
+    # addr이 비어있거나 "@" 없는 경우: name 또는 raw 원문을 표시명으로 사용
+    return name or raw
     return addr or name
 
 

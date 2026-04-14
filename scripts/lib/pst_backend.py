@@ -297,16 +297,74 @@ class PypffBackend(PSTBackend):
             _attachments          = attachments,
         )
 
+    # MAPI 첨부 파일명 관련 프로퍼티 ID (MS-PST / MS-OXCMSG 명세)
+    _MAPI_ATTACH_LONG_FILENAME = 0x3707  # PR_ATTACH_LONG_FILENAME  (우선순위 1)
+    _MAPI_ATTACH_FILENAME      = 0x3704  # PR_ATTACH_FILENAME        (우선순위 2, 8.3 형식)
+    _MAPI_ATTACH_DISPLAY_NAME  = 0x3001  # PR_DISPLAY_NAME           (우선순위 3, OLE 객체 등)
+
+    def _get_attachment_name_from_mapi(self, raw_att, fallback: str) -> str:
+        """MAPI record_sets 에서 첨부 파일명을 읽는다.
+
+        pypff 의 ``attachment.name`` 속성이 None 을 반환할 때도
+        record_sets 를 직접 탐색해 PR_ATTACH_LONG_FILENAME (0x3707) →
+        PR_ATTACH_FILENAME (0x3704) → PR_DISPLAY_NAME (0x3001) 순서로
+        파일명을 추출한다. 모두 없으면 fallback 을 반환한다.
+
+        Args:
+            raw_att:  pypff attachment 객체.
+            fallback: 파일명을 찾지 못했을 때 반환할 기본값.
+
+        Returns:
+            파일명 문자열.
+        """
+        priority = [
+            self._MAPI_ATTACH_LONG_FILENAME,
+            self._MAPI_ATTACH_FILENAME,
+            self._MAPI_ATTACH_DISPLAY_NAME,
+        ]
+        found: dict[int, str] = {}
+        try:
+            n_rs = self._safe_get(raw_att, "number_of_record_sets", 0) or 0
+            for rs_i in range(int(n_rs)):
+                try:
+                    rs = raw_att.get_record_set(rs_i)
+                    n_entries = self._safe_get(rs, "number_of_entries", 0) or 0
+                    for e_i in range(int(n_entries)):
+                        try:
+                            e = rs.get_entry(e_i)
+                            etype = e.entry_type
+                            if etype in priority and etype not in found:
+                                try:
+                                    val = e.get_data_as_string()
+                                except Exception:
+                                    val = None
+                                if val and val.strip():
+                                    found[etype] = val.strip()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        for prop_id in priority:
+            if prop_id in found:
+                return found[prop_id]
+        return fallback
+
     def get_attachment_data(self, msg: MessageData, index: int) -> tuple[str, bytes]:
         raw_att = msg._attachments[index]
         if raw_att is None:
             return f"attachment_{index}", b""
 
-        # name, size, read_buffer 모두 libpff 오류 가능성 있음
+        # 1단계: pypff name 속성 시도
+        # 2단계: MAPI record_sets 에서 PR_ATTACH_LONG_FILENAME / PR_ATTACH_FILENAME / PR_DISPLAY_NAME 읽기
         try:
-            name = str(self._safe_get(raw_att, "name", "") or f"attachment_{index}")
+            name = str(self._safe_get(raw_att, "name", "") or "")
         except Exception:
-            name = f"attachment_{index}"
+            name = ""
+        if not name:
+            name = self._get_attachment_name_from_mapi(raw_att, f"attachment_{index}")
 
         try:
             size = int(self._safe_get(raw_att, "size", 0) or 0)

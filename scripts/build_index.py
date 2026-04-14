@@ -264,11 +264,10 @@ def rebuild_from_archive(conn: sqlite3.Connection, archive_root: Path) -> int:
         인덱싱 성공한 파일 수.
     """
     log.info("인덱스 초기화...")
-    conn.executescript("""
-        DELETE FROM messages;
-        DELETE FROM messages_fts;
-        DELETE FROM fts_sync;
-    """)
+    conn.execute("DELETE FROM messages")
+    # FTS5 contentless 테이블은 DELETE 미지원 → 전용 delete-all 커맨드 사용
+    conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('delete-all')")
+    conn.execute("DELETE FROM fts_sync")
     conn.commit()
 
     md_files = list((archive_root / "archive").rglob("*.md"))

@@ -90,10 +90,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "mailview": {
         # fzf 미리보기에서 glow 가 사용할 스타일.
-        # 빈 문자열("")이면 scripts/lib/mocha-glow.json 자동 탐지 후 없으면 dark.
-        # 내장 테마: dark | light | dracula | tokyo-night | notty
-        # 커스텀: "/절대/경로/my-theme.json"
-        "glow_style": "",
+        # 기본 dark. 변경 시: dark | light | dracula | tokyo-night | notty
+        # 또는 커스텀 JSON 절대 경로: "/절대/경로/my-theme.json"
+        "glow_style": "dark",
     },
 }
 

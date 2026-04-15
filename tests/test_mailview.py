@@ -224,11 +224,9 @@ class TestResolveGlowStyle:
     def test_explicit_path_returned_as_is(self):
         assert resolve_glow_style("/some/theme.json") == "/some/theme.json"
 
-    def test_empty_uses_bundled_if_exists(self):
-        """빈 문자열이면 mocha-glow.json 경로를 반환한다 (파일이 있으면)."""
-        result = resolve_glow_style("")
-        # bundled 파일이 있으면 경로, 없으면 "dark"
-        assert "mocha-glow.json" in result or result == "dark"
+    def test_empty_returns_dark(self):
+        """빈 문자열이면 항상 'dark' 를 반환한다."""
+        assert resolve_glow_style("") == "dark"
 
     def test_empty_falls_back_to_dark_when_no_file(self, tmp_path):
         """bundled 파일이 없으면 'dark' 를 반환한다."""

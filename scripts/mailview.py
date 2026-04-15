@@ -192,10 +192,10 @@ def get_paths_from_query(args: list[str]) -> list[str]:
 def get_label(path: str, db: Path) -> str:
     """DB 에서 파일 경로에 해당하는 ANSI 컬러 '날짜  발신자  제목' 레이블을 반환한다.
 
-    Catppuccin Mocha 팔레트:
-      날짜    — Lavender  #b4befe  (180,190,254)
-      발신자  — Green     #a6e3a1  (166,227,161)
-      제목    — Text      (기본색)
+    표준 ANSI 16색 (dark 터미널 호환):
+      날짜    — 청록 (ANSI 36 cyan)
+      발신자  — 초록 (ANSI 32 green)
+      제목    — 기본색
 
     발신자는 from_name 우선 (없으면 from_addr), 10 visual cols 으로 잘라 패딩.
     """
@@ -217,11 +217,11 @@ def get_label(path: str, db: Path) -> str:
             subject    = (row[3] or "")[:80]
             sender_raw = name if name else addr
             sender     = _visual_pad(_visual_truncate(sender_raw, 10), 10)
-            # Catppuccin Mocha truecolor ANSI
+            # 표준 ANSI 16색 — dark/light 터미널 모두 호환
             return (
-                f"\033[38;2;180;190;254m{date}\033[0m"    # Lavender
+                f"\033[36m{date}\033[0m"    # cyan
                 f"  "
-                f"\033[38;2;166;227;161m{sender}\033[0m"  # Green
+                f"\033[32m{sender}\033[0m"  # green
                 f"  "
                 f"{subject}"
             )
@@ -260,8 +260,12 @@ def resolve_glow_style(cfg_style: str) -> str:
 
     우선순위:
       1. config 에 값이 있으면 그대로 사용 (내장 테마명 또는 절대 경로)
-      2. scripts/lib/mocha-glow.json 이 존재하면 해당 경로 사용
-      3. 내장 'dark' 테마로 폴백
+      2. 기본값 'dark'
+
+    커스텀 테마 사용 예 (config.toml):
+      glow_style = "dracula"
+      glow_style = "/home/user/.config/glow/catppuccin-mocha.json"
+      glow_style = "/path/to/psttomd/scripts/lib/mocha-glow.json"
 
     Args:
         cfg_style: config.toml 의 mailview.glow_style 값 (빈 문자열 가능).
@@ -269,10 +273,7 @@ def resolve_glow_style(cfg_style: str) -> str:
     Returns:
         glow -s 에 전달할 테마명 또는 파일 경로 문자열.
     """
-    if cfg_style:
-        return cfg_style
-    _bundled = Path(__file__).parent / "lib" / "mocha-glow.json"
-    return str(_bundled) if _bundled.exists() else "dark"
+    return cfg_style if cfg_style else "dark"
 
 
 def build_fzf_preview_cmd(
@@ -794,13 +795,10 @@ def main(
         #   Windows (cmd /c) : 큰따옴표   "{2}"
         #
         # Python/스크립트 경로도 동일하게 인용부호로 감싼다.
-        # Catppuccin Mocha 색상 (truecolor)
-        _MOCHA_COLORS = (
-            "bg:#1e1e2e,bg+:#313244,fg:#cdd6f4,fg+:#cdd6f4,"
-            "hl:#b4befe,hl+:#b4befe,border:#45475a,label:#b4befe,"
-            "prompt:#89b4fa,pointer:#f38ba8,marker:#a6e3a1,"
-            "info:#a6e3a1,header:#6c7086,spinner:#b4befe"
-        )
+        # fzf 색상: dark 기본 (터미널 16색 기반)
+        # 커스텀 색상 예: config.toml 에서 직접 fzf 옵션을 확장하거나
+        # 아래 _FZF_COLORS 를 Catppuccin Mocha 등으로 교체해 사용
+        _FZF_COLORS = "dark"
 
         if plat == "windows":
             q = '"'
@@ -824,7 +822,7 @@ def main(
                 f'{q}{py}{q} {q}{script_path}{q} --show-help '
                 f'| {q}{fzf_path}{q} --disabled --no-info '
                 f'--border=rounded --border-label=" 도움말 " '
-                f'--color "{_MOCHA_COLORS}"'
+                f'--color "{_FZF_COLORS}"'
             )
         else:
             q = "'"
@@ -848,7 +846,7 @@ def main(
                 f"{q}{py}{q} {q}{script_path}{q} --show-help "
                 f"| {q}{fzf_path}{q} --disabled --no-info "
                 f"--border=rounded --border-label={q} 도움말 {q} "
-                f"--color {q}{_MOCHA_COLORS}{q}"
+                f"--color {q}{_FZF_COLORS}{q}"
             )
 
         fzf_cmd = [
@@ -865,7 +863,7 @@ def main(
             "--scrollbar", "▌",
             "--padding", "0,1",
             # ── Catppuccin Mocha 색상 ────────────────────────────────────
-            "--color", _MOCHA_COLORS,
+            "--color", _FZF_COLORS,
             # ── 목록 구성 ────────────────────────────────────────────────
             "--delimiter", "\t",
             "--with-nth", "1",

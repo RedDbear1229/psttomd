@@ -34,6 +34,7 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -117,6 +118,7 @@ _FZF_COL_HEADER: str = (
     + "  "                     # 2 cols gap
     + "보낸사람" + " " * 2     # 8 + 2 = 10 visual cols (sender 열)
     + "  "                     # 2 cols gap
+    + "   "                    # 3 cols: 첨부 표시 공간 (📎 = 2 + space 1)
     + "제목"
 )
 
@@ -125,7 +127,7 @@ _FZF_COL_HEADER: str = (
 _HELP_LINES: list[str] = [
     "",
     "   키 바인딩 — mailview",
-    "   " + "─" * 36,
+    "   " + "─" * 40,
     "   Enter      메일 열람 (glow 렌더링)",
     "   Ctrl-P     원문 표시 (bat / less)",
     "   Ctrl-O     $EDITOR 로 열기",
@@ -133,9 +135,14 @@ _HELP_LINES: list[str] = [
     "   Ctrl-D     메일 삭제 (확인 후 삭제)",
     "   Ctrl-B     본문 검색 모드로 전환",
     "   Ctrl-R     전체 목록 초기화 (최근 100통)",
+    "   Alt-1      오늘 수신 메일",
+    "   Alt-2      최근 7일 메일",
+    "   Alt-3      최근 30일 메일",
+    "   Alt-4      최근 1년 메일",
     "   ?          이 도움말 (ESC 로 닫기)",
     "   ESC        종료",
-    "   " + "─" * 36,
+    "   " + "─" * 40,
+    "   📎  첨부 파일 있는 메일",
     "   검색창에 텍스트 입력 후 Ctrl-B → 본문 키워드 검색",
     "",
 ]
@@ -167,12 +174,27 @@ def _require_tool(name: str, cfg: dict, install_hint: str = "") -> str:
 # 경로 목록 수집
 # ---------------------------------------------------------------------------
 
-def get_recent_paths(db: Path, limit: int = 100) -> list[str]:
-    """DB 에서 최근 발송일 기준 Markdown 파일 경로 목록을 반환한다."""
+def get_recent_paths(db: Path, limit: int = 100, after: str = "") -> list[str]:
+    """DB 에서 최근 발송일 기준 Markdown 파일 경로 목록을 반환한다.
+
+    Args:
+        db:    인덱스 SQLite 경로.
+        limit: 최대 반환 수 (기본 100).
+        after: ISO 날짜 문자열 (YYYY-MM-DD). 지정 시 해당 날짜 이후 메일만 반환.
+
+    Returns:
+        날짜 내림차순 파일 경로 목록.
+    """
     conn = sqlite3.connect(str(db))
-    rows = conn.execute(
-        "SELECT path FROM messages ORDER BY date DESC LIMIT ?", (limit,)
-    ).fetchall()
+    if after:
+        rows = conn.execute(
+            "SELECT path FROM messages WHERE date >= ? ORDER BY date DESC LIMIT ?",
+            (after, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT path FROM messages ORDER BY date DESC LIMIT ?", (limit,)
+        ).fetchall()
     conn.close()
     return [r[0] for r in rows if r[0]]
 
@@ -205,24 +227,29 @@ def get_label(path: str, db: Path) -> str:
             """SELECT substr(date,1,10),
                       from_name,
                       from_addr,
-                      subject
+                      subject,
+                      COALESCE(n_attachments, 0)
                FROM messages WHERE path = ? LIMIT 1""",
             (path,),
         ).fetchone()
         conn.close()
         if row:
-            date       = (row[0] or "")[:10]
+            date_str   = (row[0] or "")[:10]
             name       = row[1] or ""
             addr       = row[2] or ""
             subject    = (row[3] or "")[:80]
+            n_att      = int(row[4] or 0)
             sender_raw = name if name else addr
             sender     = _visual_pad(_visual_truncate(sender_raw, 10), 10)
+            # 📎 indicator: 2-wide emoji + space = 3 visual; else 3 spaces
+            att_prefix = "📎 " if n_att > 0 else "   "
             # 표준 ANSI 16색 — dark/light 터미널 모두 호환
             return (
-                f"\033[36m{date}\033[0m"    # cyan
+                f"\033[36m{date_str}\033[0m"  # cyan
                 f"  "
-                f"\033[32m{sender}\033[0m"  # green
+                f"\033[32m{sender}\033[0m"    # green
                 f"  "
+                f"{att_prefix}"
                 f"{subject}"
             )
     except Exception:
@@ -728,7 +755,7 @@ def main(
             archive_arg = ["--archive", cfg["archive"]["root"]] if archive else []
             paths = get_paths_from_query(archive_arg + ["--body", body_filter])
         else:
-            paths = get_recent_paths(db)
+            paths = get_recent_paths(db, after=after)
         _print_fzf_lines(paths, db)
         return
 
@@ -787,6 +814,13 @@ def main(
         py           = sys.executable
         archive_path = str(cfg["archive"]["root"])
 
+        # 날짜 필터 프리셋 ISO 문자열 계산
+        _today  = date.today()
+        _today_iso  = _today.isoformat()
+        _week_iso   = (_today - timedelta(days=7)).isoformat()
+        _month_iso  = (_today - timedelta(days=30)).isoformat()
+        _year_iso   = (_today - timedelta(days=365)).isoformat()
+
         # ── execute()/reload() 바인딩 경로 인용부호 ───────────────────────
         # fzf 는 execute("cmd {2}") 에서 {2} 를 그대로 치환한다.
         # 공백 포함 경로를 안전하게 전달하려면 플랫폼별 인용부호가 필요하다.
@@ -818,6 +852,22 @@ def main(
                 f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
                 f'--archive {q}{archive_path}{q}'
             )
+            today_reload  = (
+                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
+                f'--after {q}{_today_iso}{q} --archive {q}{archive_path}{q}'
+            )
+            week_reload   = (
+                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
+                f'--after {q}{_week_iso}{q} --archive {q}{archive_path}{q}'
+            )
+            month_reload  = (
+                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
+                f'--after {q}{_month_iso}{q} --archive {q}{archive_path}{q}'
+            )
+            year_reload   = (
+                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
+                f'--after {q}{_year_iso}{q} --archive {q}{archive_path}{q}'
+            )
             help_popup    = (
                 f'{q}{py}{q} {q}{script_path}{q} --show-help '
                 f'| {q}{fzf_path}{q} --disabled --no-info '
@@ -841,6 +891,22 @@ def main(
             reset_reload  = (
                 f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
                 f"--archive {q}{archive_path}{q}"
+            )
+            today_reload  = (
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
+                f"--after {q}{_today_iso}{q} --archive {q}{archive_path}{q}"
+            )
+            week_reload   = (
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
+                f"--after {q}{_week_iso}{q} --archive {q}{archive_path}{q}"
+            )
+            month_reload  = (
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
+                f"--after {q}{_month_iso}{q} --archive {q}{archive_path}{q}"
+            )
+            year_reload   = (
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
+                f"--after {q}{_year_iso}{q} --archive {q}{archive_path}{q}"
             )
             help_popup    = (
                 f"{q}{py}{q} {q}{script_path}{q} --show-help "
@@ -868,12 +934,13 @@ def main(
             "--delimiter", "\t",
             "--with-nth", "1",
             "--header-lines", "1",
-            "--header", "Enter:열람  Ctrl-B:본문검색  ?:도움말",
+            "--header", "Enter:열람  Ctrl-B:본문검색  Alt-1~4:날짜  ?:도움말",
             # ── 미리보기 ─────────────────────────────────────────────────
             "--preview", preview_cmd,
             "--preview-window", "right:48%:border-left:wrap",
             "--preview-label", " 미리보기 ",
             # ── 키 바인딩 ────────────────────────────────────────────────
+            "--bind", "focus:change-preview-label( {2} )",
             "--bind", f"ctrl-o:execute({editor_cmd})+abort",
             "--bind", f"ctrl-a:execute({open_att_cmd})",
             "--bind", f"ctrl-d:execute({delete_cmd})+reload({reset_reload})",
@@ -885,6 +952,26 @@ def main(
             "--bind", (
                 f"ctrl-r:change-prompt(검색> )"
                 f"+reload({reset_reload})"
+                f"+clear-query"
+            ),
+            "--bind", (
+                f"alt-1:change-prompt(오늘> )"
+                f"+reload({today_reload})"
+                f"+clear-query"
+            ),
+            "--bind", (
+                f"alt-2:change-prompt(7일> )"
+                f"+reload({week_reload})"
+                f"+clear-query"
+            ),
+            "--bind", (
+                f"alt-3:change-prompt(30일> )"
+                f"+reload({month_reload})"
+                f"+clear-query"
+            ),
+            "--bind", (
+                f"alt-4:change-prompt(1년> )"
+                f"+reload({year_reload})"
                 f"+clear-query"
             ),
             "--bind", f"?:execute({help_popup})",

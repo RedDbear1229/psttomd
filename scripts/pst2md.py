@@ -701,7 +701,21 @@ def main() -> None:
     """명령행 인자를 파싱하고 convert_pst() 를 실행한다."""
     cfg = load_config()
 
-    parser = argparse.ArgumentParser(description="PST → Markdown 변환기 (크로스플랫폼)")
+    parser = argparse.ArgumentParser(
+        description="PST → Markdown 변환기 (크로스플랫폼)",
+        epilog=(
+            "관련 도구 (pip install -e . 로 모두 PATH 등록):\n"
+            "  mailgrep        전문 검색  : mailgrep '키워드' --from 홍길동 --after 2023-01-01\n"
+            "  mailview        인터랙티브 뷰어 (fzf + glow): mailview '키워드'\n"
+            "  mailstat        아카이브 통계 요약: mailstat summary\n"
+            "  build-index     SQLite FTS5 인덱스 빌드/재구축: build-index --rebuild\n"
+            "  enrich          Obsidian MOC 자동 생성: enrich\n"
+            "  verify          MD 파일 무결성 검증: verify --sample 200\n"
+            "  archive-monthly 월간 배치 변환 (12개월+ 경과 메일): archive-monthly\n"
+            "  pst2md-config   설정 파일 관리: pst2md-config show / set-output / init\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--pst",     required=True, help="PST 파일 경로")
     parser.add_argument("--out",     default=cfg["archive"]["root"], help="출력 루트")
     parser.add_argument("--cutoff",  help="이 날짜 이후 메일 제외 (YYYY-MM-DD)")

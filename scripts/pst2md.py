@@ -694,26 +694,57 @@ def convert_pst(
 
 
 # ---------------------------------------------------------------------------
+# 도구 개요 (인자 없음 + --help 공유)
+# ---------------------------------------------------------------------------
+
+_TOOLS_OVERVIEW = """\
+pst2md — PST → Markdown 아카이브 파이프라인
+
+[변환]
+  pst2md          PST → Markdown 변환  (--pst 필수)
+  build-index     SQLite FTS5 인덱스 빌드·재구축
+  archive-monthly 월간 PST 배치 변환 (12개월+ 경과 메일)
+
+[검색·열람]
+  mailgrep        FTS5 전문 검색
+                    mailgrep '키워드' --from 홍길동 --after 2023-01-01
+  mailview        fzf + glow 인터랙티브 뷰어
+                    mailview '키워드'
+  mailstat        아카이브 통계 요약
+                    mailstat summary
+
+[관리]
+  enrich          Obsidian MOC 자동 생성
+  verify          MD 파일 무결성 검증
+                    verify --sample 200
+  pst2md-config   설정 파일 관리
+                    pst2md-config show / set-output / init
+
+각 도구의 옵션: <명령어> --help\
+"""
+
+_USAGE_HINT = """
+pst2md 사용법:
+  pst2md --pst archive.pst [--out ~/mail-archive] [--dry-run] [--resume]
+"""
+
+
+# ---------------------------------------------------------------------------
 # CLI 진입점
 # ---------------------------------------------------------------------------
 
 def main() -> None:
     """명령행 인자를 파싱하고 convert_pst() 를 실행한다."""
+    # --pst 없이 실행하면 도구 개요를 출력하고 종료
+    if len(sys.argv) == 1:
+        print(_TOOLS_OVERVIEW + _USAGE_HINT)
+        sys.exit(0)
+
     cfg = load_config()
 
     parser = argparse.ArgumentParser(
         description="PST → Markdown 변환기 (크로스플랫폼)",
-        epilog=(
-            "관련 도구 (pip install -e . 로 모두 PATH 등록):\n"
-            "  mailgrep        전문 검색  : mailgrep '키워드' --from 홍길동 --after 2023-01-01\n"
-            "  mailview        인터랙티브 뷰어 (fzf + glow): mailview '키워드'\n"
-            "  mailstat        아카이브 통계 요약: mailstat summary\n"
-            "  build-index     SQLite FTS5 인덱스 빌드/재구축: build-index --rebuild\n"
-            "  enrich          Obsidian MOC 자동 생성: enrich\n"
-            "  verify          MD 파일 무결성 검증: verify --sample 200\n"
-            "  archive-monthly 월간 배치 변환 (12개월+ 경과 메일): archive-monthly\n"
-            "  pst2md-config   설정 파일 관리: pst2md-config show / set-output / init\n"
-        ),
+        epilog=_TOOLS_OVERVIEW + _USAGE_HINT,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--pst",     required=True, help="PST 파일 경로")

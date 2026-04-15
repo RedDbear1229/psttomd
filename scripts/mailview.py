@@ -899,7 +899,7 @@ def main(
             result = subprocess.run(
                 fzf_cmd,
                 stdin=stdin_fh,
-                capture_output=False,
+                stdout=subprocess.PIPE,   # 선택 항목 캡처 (fzf TUI 는 /dev/tty 직접 출력)
                 text=True,
                 encoding="utf-8",
             )
@@ -910,7 +910,8 @@ def main(
             if "\t" in selected_line:
                 selected_path = selected_line.split("\t", 1)[1].strip()
                 if selected_path and Path(selected_path).exists():
-                    subprocess.run([glow_path, "-p", "-s", "dark", selected_path])
+                    glow_style = resolve_glow_style(cfg_glow_style)
+                    subprocess.run([glow_path, "-p", "-s", glow_style, selected_path])
 
     finally:
         Path(tmp_file.name).unlink(missing_ok=True)

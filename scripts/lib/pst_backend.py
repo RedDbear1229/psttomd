@@ -150,6 +150,17 @@ class PSTBackend(ABC):
         """
         ...
 
+    def count_messages(self) -> int:
+        """PST 내 전체 메시지 수를 반환한다.
+
+        본문·첨부 데이터를 읽지 않고 폴더 트리만 순회해 카운트한다.
+        tqdm total 파라미터에 사용하기 위한 경량 메서드다.
+
+        Returns:
+            전체 메시지 수. 오류 발생 시 0.
+        """
+        return 0
+
     @abstractmethod
     def close(self) -> None:
         """열린 PST 파일과 임시 리소스를 해제한다."""
@@ -189,6 +200,35 @@ class PypffBackend(PSTBackend):
         self._pff = pypff
         self._file = pypff.file()
         self._file.open(path)
+
+    def count_messages(self) -> int:
+        """폴더 트리를 순회해 전체 메시지 수를 반환한다.
+
+        본문·첨부를 읽지 않으므로 list(iter_messages()) 보다 훨씬 빠르고
+        메모리를 거의 사용하지 않는다.
+        """
+        try:
+            return self._count_folder(self._file.get_root_folder())
+        except Exception as e:
+            log.warning("메시지 수 계산 실패: %s", e)
+            return 0
+
+    def _count_folder(self, folder) -> int:
+        """folder 하위의 메시지 수를 재귀적으로 합산한다."""
+        try:
+            n = int(self._safe_get(folder, "number_of_sub_messages", 0) or 0)
+        except Exception:
+            n = 0
+        try:
+            n_sub = int(self._safe_get(folder, "number_of_sub_folders", 0) or 0)
+            for i in range(n_sub):
+                try:
+                    n += self._count_folder(folder.get_sub_folder(i))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return n
 
     def iter_messages(self) -> Iterator[tuple[str, MessageData]]:
         root = self._file.get_root_folder()
@@ -477,6 +517,13 @@ class ReadpstBackend(PSTBackend):
             _attachments          = att_list,
         )
 
+    def count_messages(self) -> int:
+        """추출된 EML 파일 수로 전체 메시지 수를 반환한다."""
+        try:
+            return sum(1 for _ in Path(self._tmpdir).rglob("*.eml"))
+        except Exception:
+            return 0
+
     def get_attachment_data(self, msg: MessageData, index: int) -> tuple[str, bytes]:
         att = msg._attachments[index]
         name = att.get("filename") or att.get("name") or f"attachment_{index}"
@@ -642,6 +689,31 @@ class Win32ComBackend(PSTBackend):
             number_of_attachments = n_att,
             _attachments          = att_list,
         )
+
+    def count_messages(self) -> int:
+        """Outlook 폴더 트리를 순회해 전체 MailItem 수를 반환한다."""
+        try:
+            return self._count_folder_win32(self._store.GetRootFolder())
+        except Exception as e:
+            log.warning("메시지 수 계산 실패: %s", e)
+            return 0
+
+    def _count_folder_win32(self, folder) -> int:
+        """folder 하위의 MailItem 수를 재귀적으로 합산한다."""
+        try:
+            n = folder.Items.Count
+        except Exception:
+            n = 0
+        try:
+            subfolders = folder.Folders
+            for i in range(1, subfolders.Count + 1):
+                try:
+                    n += self._count_folder_win32(subfolders.Item(i))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return n
 
     def get_attachment_data(self, msg: MessageData, index: int) -> tuple[str, bytes]:
         raw_att = msg._attachments[index]

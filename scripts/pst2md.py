@@ -510,6 +510,9 @@ def save_state(out_root: Path, done: set[str]) -> None:
 # PST 변환 메인 루프
 # ---------------------------------------------------------------------------
 
+CHECKPOINT_INTERVAL = 500  # N건마다 state 저장 + JSONL flush
+
+
 def convert_pst(
     pst_path: Path,
     out_root: Path,
@@ -519,7 +522,13 @@ def convert_pst(
     resume: bool = False,
     folder_filter: Optional[str] = None,
 ) -> dict:
-    """PST 파일의 모든 메시지를 순회하며 Markdown 으로 변환한다."""
+    """PST 파일의 모든 메시지를 순회하며 Markdown 으로 변환한다.
+
+    메모리 사용량을 최소화하기 위해 메시지를 스트리밍 방식으로 처리한다:
+    - 스캔: count_messages() 로 폴더 트리만 세어 total 확보 (본문 미로딩)
+    - 변환: iter_messages() 를 list() 없이 직접 순회 (처리 후 즉시 해제)
+    - JSONL: 변환 성공마다 즉시 기록 + CHECKPOINT_INTERVAL 마다 flush/state 저장
+    """
     pst_filename = pst_path.name
     done_ids: set[str] = load_state(out_root) if resume else set()
     folder_re = re.compile(folder_filter) if folder_filter else None
@@ -528,89 +537,52 @@ def convert_pst(
         "total": 0, "converted": 0,
         "skipped": 0, "error": 0, "attachments": 0,
     }
-    index_rows: list[dict] = []
 
     if not dry_run:
         (out_root / ERRORS_DIR).mkdir(parents=True, exist_ok=True)
 
-    # 컨텍스트 매니저로 감싸 예외 발생 시에도 backend.close() 가 반드시 호출됨
-    with get_backend(config) as backend:
-        backend.open(str(pst_path))
+    # ── JSONL 파일 준비 (즉시 기록 모드) ─────────────────────────────────
+    # resume 시: 기존 msgid 를 미리 읽어 중복 방지, append 모드로 열기
+    # 신규 시:   write 모드로 열기
+    jsonl_path = out_root / "index_staging.jsonl"
+    existing_msgids: set[str] = set()
+    jsonl_f = None
 
-        log.info("PST 폴더 트리 스캔 중...")
-        all_msgs = list(tqdm(
-            backend.iter_messages(),
-            unit="msg",
-            desc="  스캔",
-            dynamic_ncols=True,
-            leave=False,
-        ))
-        log.info("총 %d개 메시지 발견", len(all_msgs))
+    if not dry_run:
+        if resume and jsonl_path.exists():
+            for line in jsonl_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        existing_msgids.add(json.loads(line)["msgid"])
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+            jsonl_f = jsonl_path.open("a", encoding="utf-8")
+        else:
+            jsonl_f = jsonl_path.open("w", encoding="utf-8")
 
-        with tqdm(
-            all_msgs,
-            unit="msg",
-            desc=pst_filename,
-            dynamic_ncols=True,
-        ) as pbar:
-          for folder_path, msg in pbar:
-            stats["total"] += 1
+    try:
+        # 컨텍스트 매니저로 감싸 예외 발생 시에도 backend.close() 가 반드시 호출됨
+        with get_backend(config) as backend:
+            backend.open(str(pst_path))
 
-            if folder_re and not folder_re.search(folder_path):
-                stats["skipped"] += 1
-                pbar.set_postfix_str(
-                    f"변환={stats['converted']} "
-                    f"skip={stats['skipped']} "
-                    f"오류={stats['error']} "
-                    f"첨부={stats['attachments']}",
-                    refresh=False,
-                )
-                continue
+            # ── 스캔: 폴더 트리만 세고 본문은 읽지 않음 ─────────────────
+            log.info("PST 폴더 트리 스캔 중...")
+            total = backend.count_messages()
+            log.info("총 %d개 메시지 발견", total)
 
-            raw_msgid = decode_mime_header(msg.message_identifier or "")
+            # ── 변환: 스트리밍 순회 (list() 로 전체 로딩 없음) ───────────
+            with tqdm(
+                backend.iter_messages(),
+                total=total,
+                unit="msg",
+                desc=pst_filename,
+                dynamic_ncols=True,
+            ) as pbar:
+                for folder_path, msg in pbar:
+                    stats["total"] += 1
 
-            # resume 체크: PST에 Message-ID가 없는 경우(캘린더·연락처 등)도
-            # message_to_md()와 동일한 결정론적 생성 ID로 중복 검사
-            if resume:
-                if raw_msgid:
-                    check_msgid = raw_msgid
-                else:
-                    _from_addr = normalize_address(
-                        decode_mime_header(msg.sender_email_address or "")
-                    )
-                    _subject = (
-                        decode_mime_header(msg.subject or "").strip() or "(제목 없음)"
-                    )
-                    _dt_iso = date_to_iso(
-                        msg.client_submit_time
-                        if isinstance(msg.client_submit_time, datetime)
-                        else None
-                    )
-                    _seed = f"{_from_addr}{_subject}{_dt_iso}"
-                    check_msgid = (
-                        f"<generated-"
-                        f"{hashlib.sha1(_seed.encode()).hexdigest()[:16]}"
-                        f"@pst2md>"
-                    )
-                if check_msgid in done_ids:
-                    stats["skipped"] += 1
-                    pbar.set_postfix_str(
-                        f"변환={stats['converted']} "
-                        f"skip={stats['skipped']} "
-                        f"오류={stats['error']} "
-                        f"첨부={stats['attachments']}",
-                        refresh=False,
-                    )
-                    continue
-
-            if cutoff:
-                date_val = msg.client_submit_time
-                if isinstance(date_val, datetime):
-                    msg_dt = (
-                        date_val if date_val.tzinfo
-                        else date_val.replace(tzinfo=timezone.utc)
-                    )
-                    if msg_dt >= cutoff:
+                    if folder_re and not folder_re.search(folder_path):
                         stats["skipped"] += 1
                         pbar.set_postfix_str(
                             f"변환={stats['converted']} "
@@ -621,48 +593,102 @@ def convert_pst(
                         )
                         continue
 
-            meta = message_to_md(
-                msg, folder_path, out_root, pst_filename, backend, dry_run
-            )
+                    raw_msgid = decode_mime_header(msg.message_identifier or "")
 
-            if meta is None:
-                stats["error"] += 1
-            else:
-                stats["converted"]   += 1
-                stats["attachments"] += meta.get("n_attachments", 0)
-                index_rows.append(meta)
-                # meta["msgid"]는 PST ID 또는 생성 ID로 항상 설정됨
-                done_ids.add(meta["msgid"])
+                    # resume 체크: PST에 Message-ID가 없는 경우(캘린더·연락처 등)도
+                    # message_to_md()와 동일한 결정론적 생성 ID로 중복 검사
+                    if resume:
+                        if raw_msgid:
+                            check_msgid = raw_msgid
+                        else:
+                            _from_addr = normalize_address(
+                                decode_mime_header(msg.sender_email_address or "")
+                            )
+                            _subject = (
+                                decode_mime_header(msg.subject or "").strip()
+                                or "(제목 없음)"
+                            )
+                            _dt_iso = date_to_iso(
+                                msg.client_submit_time
+                                if isinstance(msg.client_submit_time, datetime)
+                                else None
+                            )
+                            _seed = f"{_from_addr}{_subject}{_dt_iso}"
+                            check_msgid = (
+                                f"<generated-"
+                                f"{hashlib.sha1(_seed.encode()).hexdigest()[:16]}"
+                                f"@pst2md>"
+                            )
+                        if check_msgid in done_ids:
+                            stats["skipped"] += 1
+                            pbar.set_postfix_str(
+                                f"변환={stats['converted']} "
+                                f"skip={stats['skipped']} "
+                                f"오류={stats['error']} "
+                                f"첨부={stats['attachments']}",
+                                refresh=False,
+                            )
+                            continue
 
-            pbar.set_postfix_str(
-                f"변환={stats['converted']} "
-                f"skip={stats['skipped']} "
-                f"오류={stats['error']} "
-                f"첨부={stats['attachments']}",
-                refresh=False,
-            )
+                    if cutoff:
+                        date_val = msg.client_submit_time
+                        if isinstance(date_val, datetime):
+                            msg_dt = (
+                                date_val if date_val.tzinfo
+                                else date_val.replace(tzinfo=timezone.utc)
+                            )
+                            if msg_dt >= cutoff:
+                                stats["skipped"] += 1
+                                pbar.set_postfix_str(
+                                    f"변환={stats['converted']} "
+                                    f"skip={stats['skipped']} "
+                                    f"오류={stats['error']} "
+                                    f"첨부={stats['attachments']}",
+                                    refresh=False,
+                                )
+                                continue
 
-    if not dry_run:
-        save_state(out_root, done_ids)
-        jsonl_path = out_root / "index_staging.jsonl"
-        if resume and jsonl_path.exists():
-            # 이미 기록된 msgid 읽어 중복 방지
-            existing_msgids: set[str] = set()
-            for line in jsonl_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line:
-                    try:
-                        existing_msgids.add(json.loads(line)["msgid"])
-                    except (json.JSONDecodeError, KeyError):
-                        pass
-            with jsonl_path.open("a", encoding="utf-8") as f:
-                for row in index_rows:
-                    if row["msgid"] not in existing_msgids:
-                        f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        else:
-            with jsonl_path.open("w", encoding="utf-8") as f:
-                for row in index_rows:
-                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    meta = message_to_md(
+                        msg, folder_path, out_root, pst_filename, backend, dry_run
+                    )
+
+                    if meta is None:
+                        stats["error"] += 1
+                    else:
+                        stats["converted"]   += 1
+                        stats["attachments"] += meta.get("n_attachments", 0)
+                        done_ids.add(meta["msgid"])
+
+                        # ── JSONL 즉시 기록 ───────────────────────────────
+                        if jsonl_f and meta["msgid"] not in existing_msgids:
+                            jsonl_f.write(
+                                json.dumps(meta, ensure_ascii=False) + "\n"
+                            )
+                            existing_msgids.add(meta["msgid"])
+
+                    pbar.set_postfix_str(
+                        f"변환={stats['converted']} "
+                        f"skip={stats['skipped']} "
+                        f"오류={stats['error']} "
+                        f"첨부={stats['attachments']}",
+                        refresh=False,
+                    )
+
+                    # ── 체크포인트: CHECKPOINT_INTERVAL 건마다 flush + state 저장
+                    if not dry_run and stats["total"] % CHECKPOINT_INTERVAL == 0:
+                        if jsonl_f:
+                            jsonl_f.flush()
+                        save_state(out_root, done_ids)
+
+        # ── 정상 완료: 최종 state 저장 ───────────────────────────────────
+        if not dry_run:
+            if jsonl_f:
+                jsonl_f.flush()
+            save_state(out_root, done_ids)
+
+    finally:
+        if jsonl_f:
+            jsonl_f.close()
 
     return stats
 

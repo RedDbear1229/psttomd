@@ -130,6 +130,7 @@ _HELP_LINES: list[str] = [
     "   Ctrl-P     원문 표시 (bat / less)",
     "   Ctrl-O     $EDITOR 로 열기",
     "   Ctrl-A     첨부 파일 목록 열기",
+    "   Ctrl-D     메일 삭제 (확인 후 삭제)",
     "   Ctrl-B     본문 검색 모드로 전환",
     "   Ctrl-R     전체 목록 초기화 (최근 100통)",
     "   ?          이 도움말 (ESC 로 닫기)",
@@ -481,6 +482,177 @@ def handle_open_attachments(md_path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 메일 삭제 핸들러 (Ctrl-D 에서 호출)
+# ---------------------------------------------------------------------------
+
+def _read_frontmatter_fields(md_path: str) -> dict[str, str]:
+    """MD 파일에서 삭제 확인 표시에 필요한 frontmatter 필드를 읽는다.
+
+    Args:
+        md_path: Markdown 파일 경로 문자열.
+
+    Returns:
+        {"subject": ..., "from": ..., "date": ..., "msgid": ...} 딕셔너리.
+        읽기 실패 시 빈 딕셔너리.
+    """
+    fields: dict[str, str] = {}
+    try:
+        text = Path(md_path).read_text(encoding="utf-8")
+        if not text.startswith("---"):
+            return fields
+        end = text.find("\n---\n", 3)
+        if end == -1:
+            return fields
+        for line in text[3:end].splitlines():
+            for key in ("subject", "from", "date", "msgid"):
+                if line.startswith(f"{key}:"):
+                    fields[key] = line.partition(":")[2].strip().strip('"')
+    except OSError:
+        pass
+    return fields
+
+
+def handle_delete_message(md_path: str, archive: str = "") -> None:
+    """선택한 메일의 MD 파일을 삭제하고 SQLite 인덱스에서 제거한다.
+
+    fzf 의 execute() 액션에서 호출된다.
+    삭제 전 메일 정보와 확인 프롬프트를 표시하고,
+    첨부 파일이 있으면 함께 삭제할지 추가로 묻는다.
+
+    FTS5 인덱스 정리:
+      messages 행 삭제 전에 subject/from_name/from_addr/to_addrs 와
+      MD 본문을 읽어 FTS5 'delete' 커맨드로 정확하게 제거한다.
+
+    Args:
+        md_path: 삭제할 Markdown 파일 경로 문자열.
+        archive: 아카이브 루트 경로 (비어 있으면 config 에서 로드).
+    """
+    path = Path(md_path)
+    if not path.exists():
+        click.echo("파일 없음.")
+        return
+
+    cfg = load_config()
+    if archive:
+        cfg["archive"]["root"] = archive
+    db = db_path(cfg)
+
+    # ── 메일 정보 표시 ────────────────────────────────────────────────────
+    fm = _read_frontmatter_fields(md_path)
+    click.echo("\n삭제할 메일")
+    click.echo("  " + "─" * 40)
+    click.echo(f"  날짜: {fm.get('date', '(없음)')}")
+    click.echo(f"  발신: {fm.get('from', '(없음)')}")
+    click.echo(f"  제목: {fm.get('subject', '(없음)')}")
+    click.echo(f"  경로: {md_path}")
+
+    # ── 첨부 파일 목록 ────────────────────────────────────────────────────
+    attachments = get_attachments_from_md(md_path)
+    if attachments:
+        click.echo(f"\n  첨부 파일 {len(attachments)}개:")
+        for att in attachments:
+            size_kb = Path(att["abs_path"]).stat().st_size // 1024
+            click.echo(f"    • {att['name']}  ({size_kb:,} KB)")
+
+    # ── 삭제 확인 ────────────────────────────────────────────────────────
+    click.echo("")
+    try:
+        answer = input("MD 파일을 삭제하시겠습니까? [y/N]: ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        click.echo("\n취소.")
+        return
+
+    if answer != "y":
+        click.echo("취소.")
+        return
+
+    # ── 첨부 파일 삭제 여부 확인 ─────────────────────────────────────────
+    delete_attachments = False
+    if attachments:
+        try:
+            att_answer = input(
+                f"첨부 파일 {len(attachments)}개도 함께 삭제하시겠습니까? [y/N]: "
+            ).strip().lower()
+            delete_attachments = att_answer == "y"
+        except (KeyboardInterrupt, EOFError):
+            delete_attachments = False
+
+    # ── FTS5 인덱스 정리 (파일 삭제 전에 본문 읽기) ──────────────────────
+    fts_cleaned = False
+    if db.exists():
+        try:
+            conn = sqlite3.connect(str(db))
+            try:
+                row = conn.execute(
+                    "SELECT id, subject, from_name, from_addr, to_addrs "
+                    "FROM messages WHERE path = ?",
+                    (md_path,),
+                ).fetchone()
+                if row:
+                    rowid, subj, fname, faddr, toaddrs = row
+                    # MD 본문 읽기 (파일이 아직 존재하는 시점)
+                    body = ""
+                    try:
+                        text = path.read_text(encoding="utf-8")
+                        if text.startswith("---"):
+                            end = text.find("\n---\n", 3)
+                            body = text[end + 4:].strip() if end != -1 else text.strip()
+                        else:
+                            body = text.strip()
+                    except OSError:
+                        pass
+                    # FTS5 contentless delete: 삽입 시와 동일한 값 필요
+                    conn.execute(
+                        "INSERT INTO messages_fts"
+                        "(messages_fts, rowid, subject, from_name, from_addr, to_addrs, body)"
+                        " VALUES('delete', ?, ?, ?, ?, ?, ?)",
+                        (rowid, subj or "", fname or "", faddr or "",
+                         toaddrs or "", body),
+                    )
+                    conn.execute("DELETE FROM messages WHERE id = ?", (rowid,))
+                    conn.execute(
+                        "DELETE FROM fts_sync WHERE path = ?", (md_path,)
+                    )
+                    conn.commit()
+                    fts_cleaned = True
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            click.echo(f"DB 업데이트 실패: {e}", err=True)
+
+    # ── MD 파일 삭제 ──────────────────────────────────────────────────────
+    try:
+        path.unlink()
+    except OSError as e:
+        click.echo(f"파일 삭제 실패: {e}", err=True)
+        return
+
+    # ── 첨부 파일 삭제 ────────────────────────────────────────────────────
+    deleted_atts: list[str] = []
+    failed_atts:  list[str] = []
+    if delete_attachments:
+        for att in attachments:
+            try:
+                Path(att["abs_path"]).unlink()
+                deleted_atts.append(att["name"])
+                # 빈 디렉터리 정리 (sha256 디렉터리)
+                parent = Path(att["abs_path"]).parent
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except OSError as e:
+                failed_atts.append(f"{att['name']} ({e})")
+
+    # ── 결과 출력 ────────────────────────────────────────────────────────
+    click.echo("✓ MD 파일 삭제 완료.")
+    if fts_cleaned:
+        click.echo("✓ 인덱스에서 제거.")
+    if deleted_atts:
+        click.echo(f"✓ 첨부 파일 {len(deleted_atts)}개 삭제: {', '.join(deleted_atts)}")
+    if failed_atts:
+        click.echo(f"✗ 첨부 파일 삭제 실패: {', '.join(failed_atts)}", err=True)
+
+
+# ---------------------------------------------------------------------------
 # CLI 커맨드
 # ---------------------------------------------------------------------------
 
@@ -494,21 +666,28 @@ def handle_open_attachments(md_path: str) -> None:
 @click.option("--body",    "body_filter", default="", help="본문 내용 전용 검색")
 @click.option("--archive", default="", help="아카이브 루트")
 # ── 내부 히든 모드 (fzf execute/reload 에서 호출) ──────────────────────
-@click.option("--open-att",  "_open_att",   default="", hidden=True,
+@click.option("--open-att",   "_open_att",    default="", hidden=True,
               help="내부용: 지정 MD 파일의 첨부 파일 열기")
-@click.option("--fzf-input", "_fzf_input",  is_flag=True, hidden=True,
+@click.option("--delete-msg", "_delete_msg",  default="", hidden=True,
+              help="내부용: 지정 MD 파일 삭제")
+@click.option("--fzf-input",  "_fzf_input",   is_flag=True, hidden=True,
               help="내부용: fzf reload 용 레이블\\t경로 출력")
-@click.option("--show-help", "_show_help",  is_flag=True, hidden=True,
+@click.option("--show-help",  "_show_help",   is_flag=True, hidden=True,
               help="내부용: 키 바인딩 도움말 출력")
 def main(
     query, from_filter, after, before, folder, thread,
-    body_filter, archive, _open_att, _fzf_input, _show_help,
+    body_filter, archive, _open_att, _delete_msg, _fzf_input, _show_help,
 ):
     """fzf + glow 인터랙티브 메일 뷰어."""
 
     # ── Ctrl-A 첨부 열기 모드 ────────────────────────────────────────────
     if _open_att:
         handle_open_attachments(_open_att)
+        return
+
+    # ── Ctrl-D 메일 삭제 모드 ────────────────────────────────────────────
+    if _delete_msg:
+        handle_delete_message(_delete_msg, archive)
         return
 
     # ── 도움말 출력 모드 (? 키 → fzf --disabled 팝업) ───────────────────
@@ -604,10 +783,13 @@ def main(
         if plat == "windows":
             q = '"'
             open_att_cmd  = f'{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}'
+            delete_cmd    = (
+                f'{q}{py}{q} {q}{script_path}{q} --delete-msg {q}{{2}}{q} '
+                f'--archive {q}{archive_path}{q}'
+            )
             editor_cmd    = f'{q}{editor}{q} {q}{{2}}{q}'
             bat_cmd       = f'{q}{bat_path}{q} --style=full {q}{{2}}{q}' if bat_path else None
             pager_cmd     = f'more {q}{{2}}{q}'
-            # fzf-input reload: --body {q} 는 fzf 가 검색창 텍스트로 치환
             body_reload   = (
                 f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
                 f'--body {q}{{q}}{q} --archive {q}{archive_path}{q}'
@@ -625,6 +807,10 @@ def main(
         else:
             q = "'"
             open_att_cmd  = f"{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}"
+            delete_cmd    = (
+                f"{q}{py}{q} {q}{script_path}{q} --delete-msg {q}{{2}}{q} "
+                f"--archive {q}{archive_path}{q}"
+            )
             editor_cmd    = f"{q}{editor}{q} {q}{{2}}{q}"
             bat_cmd       = f"{q}{bat_path}{q} --style=full {q}{{2}}{q}" if bat_path else None
             pager_cmd     = f"less {q}{{2}}{q}"
@@ -650,9 +836,9 @@ def main(
             "--layout=reverse",
             "--border=rounded",
             "--border-label= ✉ mailview ",
-            "--header-first",                    # 헤더를 목록 상단에 배치
+            "--header-first",
             "--prompt", "검색> ",
-            "--info=right",                      # 결과 수를 오른쪽 끝에 표시
+            "--info=right",
             "--pointer", "▶",
             "--scrollbar", "▌",
             "--padding", "0,1",
@@ -662,7 +848,6 @@ def main(
             "--delimiter", "\t",
             "--with-nth", "1",
             "--header-lines", "1",
-            # 핵심 3개만 표기 — 나머지는 ? 팝업
             "--header", "Enter:열람  Ctrl-B:본문검색  ?:도움말",
             # ── 미리보기 ─────────────────────────────────────────────────
             "--preview", preview_cmd,
@@ -671,6 +856,7 @@ def main(
             # ── 키 바인딩 ────────────────────────────────────────────────
             "--bind", f"ctrl-o:execute({editor_cmd})+abort",
             "--bind", f"ctrl-a:execute({open_att_cmd})",
+            "--bind", f"ctrl-d:execute({delete_cmd})+reload({reset_reload})",
             "--bind", (
                 f"ctrl-b:change-prompt(본문검색> )"
                 f"+reload({body_reload})"

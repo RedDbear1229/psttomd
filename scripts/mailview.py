@@ -255,7 +255,31 @@ def _print_fzf_lines(paths: list[str], db: Path) -> None:
 # 플랫폼별 fzf/에디터 설정
 # ---------------------------------------------------------------------------
 
-def build_fzf_preview_cmd(glow_path: str, bat_path: Optional[str]) -> str:
+def resolve_glow_style(cfg_style: str) -> str:
+    """config 의 glow_style 값을 실제 사용할 스타일 문자열로 변환한다.
+
+    우선순위:
+      1. config 에 값이 있으면 그대로 사용 (내장 테마명 또는 절대 경로)
+      2. scripts/lib/mocha-glow.json 이 존재하면 해당 경로 사용
+      3. 내장 'dark' 테마로 폴백
+
+    Args:
+        cfg_style: config.toml 의 mailview.glow_style 값 (빈 문자열 가능).
+
+    Returns:
+        glow -s 에 전달할 테마명 또는 파일 경로 문자열.
+    """
+    if cfg_style:
+        return cfg_style
+    _bundled = Path(__file__).parent / "lib" / "mocha-glow.json"
+    return str(_bundled) if _bundled.exists() else "dark"
+
+
+def build_fzf_preview_cmd(
+    glow_path: str,
+    bat_path: Optional[str],
+    glow_style: str = "",
+) -> str:
     """플랫폼에 맞는 fzf --preview 명령어 문자열을 생성한다.
 
     fzf 입력 형식: "레이블\\t파일경로" — {2} 가 경로를 가리킨다.
@@ -263,44 +287,41 @@ def build_fzf_preview_cmd(glow_path: str, bat_path: Optional[str]) -> str:
     우선순위: glow(마크다운 렌더링·컬러) → bat(구문 강조) → type/cat(플레인)
     bat 은 Ctrl-P 원문 보기 전용으로 분리한다.
 
-    glow 스타일:
-      scripts/lib/mocha-glow.json (Catppuccin Mocha) 파일이 있으면 사용하고,
-      없으면 내장 dark 테마로 폴백한다.
+    glow 스타일 결정:
+      glow_style 인자 → scripts/lib/mocha-glow.json 자동 탐지 → dark 폴백
+      (resolve_glow_style() 위임)
 
     경로 인용부호 전략:
       - Linux  : {2} 를 작은따옴표로 감쌈 → 공백·특수문자 안전
       - Windows: {2} 를 큰따옴표로 감쌈  → cmd.exe 공백 처리
-        (fzf 가 {2} 확장 후 따옴표가 적용되므로 이중 따옴표 불필요)
 
     Args:
-        glow_path: glow 실행 파일 절대 경로.
-        bat_path:  bat 실행 파일 절대 경로 (없으면 None, 폴백으로만 사용).
+        glow_path:  glow 실행 파일 절대 경로.
+        bat_path:   bat 실행 파일 절대 경로 (없으면 None).
+        glow_style: config 에서 전달된 스타일 값 (빈 문자열이면 자동 결정).
 
     Returns:
         fzf --preview 옵션에 전달할 명령어 문자열.
     """
-    plat = detect_platform()
-
-    # Catppuccin Mocha glow 테마 경로 — 없으면 내장 dark 폴백
-    _theme_file = Path(__file__).parent / "lib" / "mocha-glow.json"
-    glow_style  = str(_theme_file) if _theme_file.exists() else "dark"
+    plat  = detect_platform()
+    style = resolve_glow_style(glow_style)
 
     if plat == "windows":
-        item         = '"{2}"'
+        item          = '"{2}"'
         null_redirect = "2>nul"
         fallback = (
             f'"{bat_path}" --style=plain --color=always {item} {null_redirect}'
             if bat_path else f'type {item}'
         )
-        return f'"{glow_path}" -s "{glow_style}" {item} {null_redirect} || {fallback}'
+        return f'"{glow_path}" -s "{style}" {item} {null_redirect} || {fallback}'
     else:
-        item         = "'{2}'"
+        item          = "'{2}'"
         null_redirect = "2>/dev/null"
         fallback = (
             f"'{bat_path}' --style=plain --color=always {item} {null_redirect}"
             if bat_path else f"cat {item}"
         )
-        return f"'{glow_path}' -s '{glow_style}' {item} {null_redirect} || {fallback}"
+        return f"'{glow_path}' -s '{style}' {item} {null_redirect} || {fallback}"
 
 
 def get_editor() -> str:
@@ -758,7 +779,8 @@ def main(
             tmp_file.write(f"{label}\t{p}\n")
         tmp_file.close()
 
-        preview_cmd  = build_fzf_preview_cmd(glow_path, bat_path)
+        cfg_glow_style = cfg.get("mailview", {}).get("glow_style", "")
+        preview_cmd  = build_fzf_preview_cmd(glow_path, bat_path, cfg_glow_style)
         editor       = get_editor()
         script_path  = str(Path(__file__).resolve())
         py           = sys.executable

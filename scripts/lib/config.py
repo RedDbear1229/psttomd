@@ -88,6 +88,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # 빈 문자열 = Outlook 기본 프로파일 사용
         "outlook_profile": "",
     },
+    "mailview": {
+        # fzf 미리보기에서 glow 가 사용할 스타일.
+        # 빈 문자열("")이면 scripts/lib/mocha-glow.json 자동 탐지 후 없으면 dark.
+        # 내장 테마: dark | light | dracula | tokyo-night | notty
+        # 커스텀: "/절대/경로/my-theme.json"
+        "glow_style": "",
+    },
 }
 
 
@@ -283,6 +290,11 @@ def init_config_file(
         f'bat     = "bat"\n'
         f'sqlite3 = "sqlite3"\n'
         f'rg      = "rg"\n'
+        f"\n"
+        f"[mailview]\n"
+        f"# fzf 미리보기 glow 테마: dark | light | dracula | tokyo-night | notty\n"
+        f"# 또는 커스텀 JSON 절대 경로. 비워두면 mocha-glow.json 자동 사용.\n"
+        f'glow_style = ""\n'
     )
 
     if plat == "windows":

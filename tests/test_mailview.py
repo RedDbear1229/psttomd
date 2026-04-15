@@ -13,6 +13,7 @@ import sqlite3
 
 from mailview import (
     build_fzf_preview_cmd,
+    resolve_glow_style,
     get_editor,
     get_attachments_from_md,
     _print_fzf_lines,
@@ -67,6 +68,18 @@ class TestBuildFzfPreviewCmd:
         assert "-s" in cmd
         # mocha-glow.json 이 scripts/lib/ 에 있으므로 경로가 포함돼야 함
         assert "mocha-glow.json" in cmd or "-s 'dark'" in cmd
+
+    def test_explicit_builtin_style_used(self):
+        """glow_style 에 내장 테마명을 전달하면 그 값이 -s 에 사용된다."""
+        with patch("mailview.detect_platform", return_value="linux"):
+            cmd = build_fzf_preview_cmd("/usr/bin/glow", None, glow_style="dracula")
+        assert "-s 'dracula'" in cmd
+
+    def test_explicit_path_style_used(self):
+        """glow_style 에 파일 경로를 전달하면 그 경로가 -s 에 사용된다."""
+        with patch("mailview.detect_platform", return_value="linux"):
+            cmd = build_fzf_preview_cmd("/usr/bin/glow", None, glow_style="/my/theme.json")
+        assert "-s '/my/theme.json'" in cmd
 
     def test_wsl_uses_single_quotes(self):
         """WSL 은 linux 분기와 동일하게 단일 인용부호 사용"""
@@ -203,6 +216,28 @@ class TestPrintFzfLines:
 # ---------------------------------------------------------------------------
 # _visual_width / _visual_truncate / _visual_pad
 # ---------------------------------------------------------------------------
+
+class TestResolveGlowStyle:
+    def test_explicit_builtin_returned_as_is(self):
+        assert resolve_glow_style("dracula") == "dracula"
+
+    def test_explicit_path_returned_as_is(self):
+        assert resolve_glow_style("/some/theme.json") == "/some/theme.json"
+
+    def test_empty_uses_bundled_if_exists(self):
+        """빈 문자열이면 mocha-glow.json 경로를 반환한다 (파일이 있으면)."""
+        result = resolve_glow_style("")
+        # bundled 파일이 있으면 경로, 없으면 "dark"
+        assert "mocha-glow.json" in result or result == "dark"
+
+    def test_empty_falls_back_to_dark_when_no_file(self, tmp_path):
+        """bundled 파일이 없으면 'dark' 를 반환한다."""
+        import mailview as mv
+        orig_file = mv.Path(__file__).parent.parent / "scripts" / "lib" / "mocha-glow.json"
+        with patch.object(mv.Path, "exists", lambda self: False):
+            result = resolve_glow_style("")
+        assert result == "dark"
+
 
 class TestVisualHelpers:
     def test_ascii_width(self):

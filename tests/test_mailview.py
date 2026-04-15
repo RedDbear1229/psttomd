@@ -16,6 +16,7 @@ from mailview import (
     resolve_glow_style,
     get_editor,
     get_attachments_from_md,
+    get_folder_list,
     get_recent_paths,
     _print_fzf_lines,
     _FZF_COL_HEADER,
@@ -627,3 +628,72 @@ class TestHandleBulkDelete:
             handle_bulk_delete(str(tmp_path))
         captured = capsys.readouterr()
         assert "선택된 메일 없음" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# get_folder_list
+# ---------------------------------------------------------------------------
+
+def _make_folder_db(tmp_path: Path) -> Path:
+    """폴더 목록 테스트용 SQLite DB 를 생성한다."""
+    db_file = tmp_path / "index.sqlite"
+    conn = sqlite3.connect(str(db_file))
+    conn.executescript("""
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY, msgid TEXT UNIQUE NOT NULL,
+            date TEXT, from_name TEXT, from_addr TEXT,
+            to_addrs TEXT, cc_addrs TEXT, subject TEXT,
+            folder TEXT, thread TEXT, source_pst TEXT,
+            path TEXT NOT NULL, n_attachments INTEGER DEFAULT 0
+        );
+    """)
+    rows = [
+        ("<a>", "Inbox",        "a.md"),
+        ("<b>", "Sent Items",   "b.md"),
+        ("<c>", "Inbox",        "c.md"),  # 중복 폴더
+        ("<d>", "",             "d.md"),  # 빈 폴더명
+        ("<e>", "Deleted",      "e.md"),
+    ]
+    for msgid, folder_name, path in rows:
+        conn.execute(
+            "INSERT INTO messages (msgid, folder, path) VALUES (?, ?, ?)",
+            (msgid, folder_name, path),
+        )
+    conn.commit()
+    conn.close()
+    return db_file
+
+
+class TestGetFolderList:
+    def test_returns_unique_folders(self, tmp_path):
+        db = _make_folder_db(tmp_path)
+        folders = get_folder_list(db)
+        assert folders.count("Inbox") == 1
+
+    def test_excludes_empty_folder(self, tmp_path):
+        db = _make_folder_db(tmp_path)
+        folders = get_folder_list(db)
+        assert "" not in folders
+
+    def test_sorted_alphabetically(self, tmp_path):
+        db = _make_folder_db(tmp_path)
+        folders = get_folder_list(db)
+        assert folders == sorted(folders)
+
+    def test_all_distinct_non_empty_folders(self, tmp_path):
+        db = _make_folder_db(tmp_path)
+        folders = get_folder_list(db)
+        assert set(folders) == {"Deleted", "Inbox", "Sent Items"}
+
+    def test_empty_db_returns_empty_list(self, tmp_path):
+        db_file = tmp_path / "empty.sqlite"
+        conn = sqlite3.connect(str(db_file))
+        conn.executescript("""
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY, msgid TEXT UNIQUE NOT NULL,
+                folder TEXT, path TEXT NOT NULL
+            );
+        """)
+        conn.commit()
+        conn.close()
+        assert get_folder_list(db_file) == []

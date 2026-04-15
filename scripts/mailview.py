@@ -128,14 +128,16 @@ _FZF_COL_HEADER: str = (
 _HELP_LINES: list[str] = [
     "",
     "   키 바인딩 — mailview",
-    "   " + "─" * 40,
+    "   " + "─" * 44,
     "   Enter      메일 열람 (glow 렌더링)",
     "   Ctrl-P     원문 표시 (bat / less)",
     "   Ctrl-O     $EDITOR 로 열기",
     "   Ctrl-A     첨부 파일 목록 열기",
     "   Ctrl-D     메일 삭제 (확인 후 삭제)",
     "   Ctrl-X     선택 메일 일괄 삭제 (Tab 으로 복수 선택)",
-    "   Ctrl-B     본문 검색 모드로 전환",
+    "   Ctrl-B     본문 검색 모드 (미리보기에 매칭 라인 강조)",
+    "   Ctrl-F     폴더 브라우저 (fzf 0.47+ 필요)",
+    "   Ctrl-T     같은 스레드 전체 보기 (fzf 0.47+ 필요)",
     "   Ctrl-R     전체 목록 초기화 (최근 100통, 날짜순)",
     "   Alt-S      제목순 정렬",
     "   Alt-F      발신자순 정렬",
@@ -146,9 +148,9 @@ _HELP_LINES: list[str] = [
     "   Tab        멀티 선택 토글",
     "   ?          이 도움말 (ESC 로 닫기)",
     "   ESC        종료",
-    "   " + "─" * 40,
+    "   " + "─" * 44,
     "   📎  첨부 파일 있는 메일",
-    "   검색창에 텍스트 입력 후 Ctrl-B → 본문 키워드 검색",
+    "   Ctrl-B 후 검색어 입력 → 미리보기에서 매칭 라인 하이라이트",
     "",
 ]
 
@@ -214,6 +216,23 @@ def get_recent_paths(
         rows = conn.execute(
             f"SELECT path FROM messages ORDER BY {order_clause} LIMIT ?", (limit,)
         ).fetchall()
+    conn.close()
+    return [r[0] for r in rows if r[0]]
+
+
+def get_folder_list(db: Path) -> list[str]:
+    """DB 에서 사용 중인 폴더 이름 목록을 반환한다.
+
+    Args:
+        db: 인덱스 SQLite 경로.
+
+    Returns:
+        알파벳/가나다순으로 정렬된 폴더 이름 목록.
+    """
+    conn = sqlite3.connect(str(db))
+    rows = conn.execute(
+        "SELECT DISTINCT folder FROM messages WHERE folder != '' ORDER BY folder"
+    ).fetchall()
     conn.close()
     return [r[0] for r in rows if r[0]]
 
@@ -855,12 +874,16 @@ def handle_bulk_delete(archive: str = "") -> None:
               help="내부용: 키 바인딩 도움말 출력")
 @click.option("--fzf-bulk-delete", "_fzf_bulk_delete", is_flag=True, hidden=True,
               help="내부용: stdin 에서 경로를 읽어 일괄 삭제")
+@click.option("--list-folders",    "_list_folders",    is_flag=True, hidden=True,
+              help="내부용: 폴더 목록 출력 (sub-fzf 용)")
+@click.option("--get-thread",      "_get_thread",      default="", hidden=True,
+              help="내부용: 지정 MD 파일의 스레드 ID 출력")
 @click.option("--sort", default="date", hidden=True,
               help="내부용: fzf-input 정렬 기준 (date|from|subject)")
 def main(
     query, from_filter, after, before, folder, thread,
     body_filter, archive, _open_att, _delete_msg, _fzf_input, _show_help,
-    _fzf_bulk_delete, sort,
+    _fzf_bulk_delete, _list_folders, _get_thread, sort,
 ):
     """fzf + glow 인터랙티브 메일 뷰어."""
 
@@ -885,15 +908,44 @@ def main(
         handle_bulk_delete(archive)
         return
 
-    # ── fzf reload 출력 모드 (Ctrl-B / Ctrl-R / Alt-* ) ─────────────────
+    # ── 폴더 목록 출력 모드 (Ctrl-F 서브 fzf 용) ────────────────────────
+    if _list_folders:
+        cfg = load_config()
+        if archive:
+            cfg["archive"]["root"] = archive
+        db = db_path(cfg)
+        for folder_name in get_folder_list(db):
+            click.echo(folder_name)
+        return
+
+    # ── 스레드 ID 출력 모드 (Ctrl-T 서브 fzf 용) ────────────────────────
+    if _get_thread:
+        cfg = load_config()
+        if archive:
+            cfg["archive"]["root"] = archive
+        db = db_path(cfg)
+        conn = sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT thread FROM messages WHERE path = ? LIMIT 1", (_get_thread,)
+        ).fetchone()
+        conn.close()
+        if row and row[0]:
+            click.echo(row[0])
+        return
+
+    # ── fzf reload 출력 모드 (Ctrl-B / Ctrl-F / Ctrl-T / Ctrl-R / Alt-* ) ──
     if _fzf_input:
         cfg = load_config()
         if archive:
             cfg["archive"]["root"] = archive
         db = db_path(cfg)
-        if body_filter:
-            archive_arg = ["--archive", cfg["archive"]["root"]] if archive else []
-            paths = get_paths_from_query(archive_arg + ["--body", body_filter])
+        archive_arg = ["--archive", cfg["archive"]["root"]] if archive else []
+        if body_filter or folder or thread:
+            extra: list[str] = []
+            if body_filter: extra += ["--body",   body_filter]
+            if folder:      extra += ["--folder", folder]
+            if thread:      extra += ["--thread", thread]
+            paths = get_paths_from_query(archive_arg + extra)
         else:
             paths = get_recent_paths(db, after=after, sort=sort)
         _print_fzf_lines(paths, db)
@@ -949,6 +1001,7 @@ def main(
 
         cfg_glow_style = cfg.get("mailview", {}).get("glow_style", "")
         preview_cmd  = build_fzf_preview_cmd(glow_path, bat_path, cfg_glow_style)
+        _glow_style  = resolve_glow_style(cfg_glow_style)
         editor       = get_editor()
         script_path  = str(Path(__file__).resolve())
         py           = sys.executable
@@ -1080,6 +1133,39 @@ def main(
                 f"--color {q}{_FZF_COLORS}{q}"
             )
 
+        # ── 3단계: 검색 하이라이트 / 폴더 브라우저 / 스레드 뷰 ─────────────
+        # Linux/WSL 전용 (transform action: fzf 0.47+ 필요)
+        if plat in ("linux", "wsl"):
+            # Ctrl-B 활성 시: grep 으로 {q} 매칭 라인 강조 (fallback: glow)
+            search_preview_cmd = (
+                f"grep --color=always -i -n -A2 -B2 '{{q}}' '{{2}}' 2>/dev/null"
+                f" || '{glow_path}' -s '{_glow_style}' '{{2}}' 2>/dev/null"
+            )
+            # Ctrl-F: 폴더 브라우저 → 선택 폴더로 목록 reload
+            folder_transform = (
+                f"FOLDER=$({q}{py}{q} {q}{script_path}{q} --list-folders"
+                f" --archive {q}{archive_path}{q} | fzf --prompt={q}폴더> {q}"
+                f" --header={q}Enter:선택  ESC:취소{q});"
+                f" [ -n \"$FOLDER\" ] && printf"
+                f" \"change-prompt(%s> )+reload({q}{py}{q} {q}{script_path}{q}"
+                f" --fzf-input --folder '%s' --archive {q}{archive_path}{q})\""
+                f" \"$FOLDER\" \"$FOLDER\""
+            )
+            # Ctrl-T: 현재 메일의 스레드 전체 → 스레드 필터로 reload
+            thread_transform = (
+                f"THREAD=$({q}{py}{q} {q}{script_path}{q} --get-thread {q}{{2}}{q}"
+                f" --archive {q}{archive_path}{q});"
+                f" [ -n \"$THREAD\" ] && printf"
+                f" \"change-prompt(스레드> )+reload({q}{py}{q} {q}{script_path}{q}"
+                f" --fzf-input --thread '%s' --archive {q}{archive_path}{q})\""
+                f" \"$THREAD\""
+            )
+        else:
+            # Windows: 검색 하이라이트 없이 glow 미리보기 유지
+            search_preview_cmd = preview_cmd
+            folder_transform   = ""
+            thread_transform   = ""
+
         fzf_cmd = [
             fzf_path,
             # ── television 스타일 레이아웃 ───────────────────────────────
@@ -1101,7 +1187,7 @@ def main(
             "--delimiter", "\t",
             "--with-nth", "1",
             "--header-lines", "1",
-            "--header", "Enter:열람  Tab:선택  Ctrl-X:일괄삭제  Alt-S/F:정렬  ?:도움말",
+            "--header", "Enter:열람  Tab:선택  Ctrl-B:검색강조  Ctrl-F:폴더  ?:도움말",
             # ── 미리보기 ─────────────────────────────────────────────────
             "--preview", preview_cmd,
             "--preview-window", "right:48%:border-left:wrap",
@@ -1117,11 +1203,13 @@ def main(
                 f"ctrl-b:change-prompt(본문검색> )"
                 f"+reload({body_reload})"
                 f"+clear-query"
+                f"+change-preview({search_preview_cmd})"
             ),
             "--bind", (
                 f"ctrl-r:change-prompt(검색> )"
                 f"+reload({reset_reload})"
                 f"+clear-query"
+                f"+change-preview({preview_cmd})"
             ),
             "--bind", (
                 f"alt-s:change-prompt(제목순> )"
@@ -1155,6 +1243,12 @@ def main(
             ),
             "--bind", f"?:execute({help_popup})",
         ]
+
+        # Ctrl-F / Ctrl-T: transform action 필요 (fzf 0.47+, Linux/WSL 전용)
+        if folder_transform:
+            fzf_cmd += ["--bind", f"ctrl-f:transform({folder_transform})"]
+        if thread_transform:
+            fzf_cmd += ["--bind", f"ctrl-t:transform({thread_transform})"]
 
         if bat_cmd:
             fzf_cmd += ["--bind", f"ctrl-p:execute({bat_cmd})+abort"]

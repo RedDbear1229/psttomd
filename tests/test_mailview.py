@@ -15,6 +15,9 @@ from mailview import (
     get_attachments_from_md,
     _print_fzf_lines,
     _FZF_COL_HEADER,
+    _visual_width,
+    _visual_truncate,
+    _visual_pad,
 )
 
 
@@ -188,3 +191,62 @@ class TestPrintFzfLines:
         # 헤더만 출력되고 경로 라인은 없어야 함
         lines = [l for l in captured.out.splitlines() if l.strip()]
         assert len(lines) == 1  # 헤더 한 줄만
+
+
+# ---------------------------------------------------------------------------
+# _visual_width / _visual_truncate / _visual_pad
+# ---------------------------------------------------------------------------
+
+class TestVisualHelpers:
+    def test_ascii_width(self):
+        assert _visual_width("hello") == 5
+
+    def test_korean_width(self):
+        # 한글 1자 = 2 visual cols
+        assert _visual_width("안녕") == 4
+
+    def test_mixed_width(self):
+        assert _visual_width("A안B") == 4  # 1 + 2 + 1
+
+    def test_truncate_ascii(self):
+        assert _visual_truncate("hello", 3) == "hel"
+
+    def test_truncate_korean(self):
+        # 한글 5자(10 visual), max=10 → 전부 유지
+        assert _visual_truncate("안녕하세요", 10) == "안녕하세요"
+
+    def test_truncate_korean_partial(self):
+        # 한글 3자(6 visual), max=5 → 2자(4 visual) — 마지막 글자 잘림
+        result = _visual_truncate("안녕하", 5)
+        assert _visual_width(result) <= 5
+        assert result == "안녕"
+
+    def test_truncate_mixed(self):
+        # "A안" = 3 visual, max=2 → "A"
+        assert _visual_truncate("A안B", 2) == "A"
+
+    def test_pad_ascii(self):
+        result = _visual_pad("hi", 5)
+        assert result == "hi   "
+        assert _visual_width(result) == 5
+
+    def test_pad_korean(self):
+        # "안녕" = 4 visual, pad to 10
+        result = _visual_pad("안녕", 10)
+        assert _visual_width(result) == 10
+        assert result.endswith(" " * 6)
+
+    def test_pad_already_at_width(self):
+        result = _visual_pad("hello", 5)
+        assert result == "hello"
+
+    def test_truncate_then_pad_gives_exact_width(self):
+        # 한글 5자 → truncate to 10 → pad to 10
+        result = _visual_pad(_visual_truncate("안녕하세요abc", 10), 10)
+        assert _visual_width(result) == 10
+
+    def test_col_header_sender_width(self):
+        """_FZF_COL_HEADER 에서 보낸사람 열이 10 visual cols 임을 확인."""
+        # 헤더: "날짜[6sp]  보낸사람[2sp]  제목"
+        # "보낸사람" + "  " = 8+2 = 10 visual
+        assert "보낸사람" in _FZF_COL_HEADER

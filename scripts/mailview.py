@@ -33,6 +33,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -43,38 +44,99 @@ from lib.config import load_config, db_path, archive_root, detect_platform
 
 
 # ---------------------------------------------------------------------------
+# CJK 시각적 너비 헬퍼
+# ---------------------------------------------------------------------------
+
+def _visual_width(s: str) -> int:
+    """문자열의 터미널 시각적 너비를 반환한다 (CJK 문자는 2칸).
+
+    Args:
+        s: 너비를 측정할 문자열.
+
+    Returns:
+        터미널 출력 시 차지하는 칸 수.
+    """
+    width = 0
+    for ch in s:
+        eaw = unicodedata.east_asian_width(ch)
+        width += 2 if eaw in ("W", "F") else 1
+    return width
+
+
+def _visual_truncate(s: str, max_width: int) -> str:
+    """시각적 너비 기준으로 문자열을 자른다 (CJK 인식).
+
+    Args:
+        s:         원본 문자열.
+        max_width: 최대 시각적 너비.
+
+    Returns:
+        max_width 를 초과하지 않는 최대 길이의 문자열.
+    """
+    result: list[str] = []
+    w = 0
+    for ch in s:
+        eaw = unicodedata.east_asian_width(ch)
+        cw = 2 if eaw in ("W", "F") else 1
+        if w + cw > max_width:
+            break
+        result.append(ch)
+        w += cw
+    return "".join(result)
+
+
+def _visual_pad(s: str, width: int) -> str:
+    """시각적 너비 기준으로 오른쪽에 공백을 채워 지정 너비로 맞춘다.
+
+    Args:
+        s:     원본 문자열.
+        width: 목표 시각적 너비.
+
+    Returns:
+        오른쪽 공백으로 채워진 문자열.
+    """
+    current = _visual_width(s)
+    if current < width:
+        s += " " * (width - current)
+    return s
+
+
+# ---------------------------------------------------------------------------
 # fzf 컬럼 헤더
 # ---------------------------------------------------------------------------
-# get_label() 포맷: f"{date}  {sender:<28}  {subject}"
-#   date   = 10 cols  (YYYY-MM-DD)
-#   sender = 28 cols  (left-padded ASCII)
+# get_label() 포맷: f"{date}  {sender_padded}  {subject}"
+#   date   = 10 visual cols  (YYYY-MM-DD)
+#   sender = 10 visual cols  (한글 약 5자)
 #   subject = 나머지
 #
-# 한글은 터미널에서 2칸 너비로 출력되므로 시각적 정렬에 맞게 공백을 조정한다.
-#   '날짜'   = 4 visual cols → date   10 cols 맞추기 위해 6 spaces 추가
-#   '보낸사람' = 8 visual cols → sender 28 cols 맞추기 위해 20 spaces 추가
+# 헤더 한글 시각적 너비:
+#   '날짜'    = 4 visual → 10 맞추기 위해 6 spaces 추가
+#   '보낸사람' = 8 visual → 10 맞추기 위해 2 spaces 추가
 _FZF_COL_HEADER: str = (
     "날짜" + " " * 6           # 4 + 6 = 10 visual cols (date 열)
     + "  "                     # 2 cols gap
-    + "보낸사람" + " " * 20    # 8 + 20 = 28 visual cols (sender 열)
+    + "보낸사람" + " " * 2     # 8 + 2 = 10 visual cols (sender 열)
     + "  "                     # 2 cols gap
     + "제목"
 )
 
 # 도움말 팝업에 표시할 키 바인딩 목록 (fzf --disabled 로 표시)
+# television 스타일: 모든 바인딩을 한 곳에 모아 ? 키로만 접근
 _HELP_LINES: list[str] = [
-    "  키 바인딩 도움말 — mailview",
-    "  " + "─" * 40,
-    "  Enter      glow 로 메일 열람",
-    "  Ctrl-P     bat / less 로 원문 표시",
-    "  Ctrl-O     $EDITOR 로 편집",
-    "  Ctrl-A     첨부 파일 열기",
-    "  Ctrl-B     현재 검색어로 본문 검색 후 목록 갱신",
-    "  Ctrl-R     전체 목록 초기화 (최근 100통)",
-    "  ?          이 도움말",
-    "  ESC        닫기 / 종료",
-    "  " + "─" * 40,
-    "  검색창 텍스트 입력 후 Ctrl-B → 본문에서 해당 키워드 검색",
+    "",
+    "   키 바인딩 — mailview",
+    "   " + "─" * 36,
+    "   Enter      메일 열람 (glow 렌더링)",
+    "   Ctrl-P     원문 표시 (bat / less)",
+    "   Ctrl-O     $EDITOR 로 열기",
+    "   Ctrl-A     첨부 파일 목록 열기",
+    "   Ctrl-B     본문 검색 모드로 전환",
+    "   Ctrl-R     전체 목록 초기화 (최근 100통)",
+    "   ?          이 도움말 (ESC 로 닫기)",
+    "   ESC        종료",
+    "   " + "─" * 36,
+    "   검색창에 텍스트 입력 후 Ctrl-B → 본문 키워드 검색",
+    "",
 ]
 
 
@@ -127,30 +189,38 @@ def get_paths_from_query(args: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def get_label(path: str, db: Path) -> str:
-    """DB 에서 파일 경로에 해당하는 ANSI 컬러 '날짜  발신자  제목' 레이블을 반환한다."""
+    """DB 에서 파일 경로에 해당하는 ANSI 컬러 '날짜  발신자  제목' 레이블을 반환한다.
+
+    Catppuccin Mocha 팔레트:
+      날짜    — Lavender  #b4befe  (180,190,254)
+      발신자  — Green     #a6e3a1  (166,227,161)
+      제목    — Text      (기본색)
+
+    발신자는 from_name 우선 (없으면 from_addr), 10 visual cols 으로 잘라 패딩.
+    """
     try:
         conn = sqlite3.connect(str(db))
         row = conn.execute(
             """SELECT substr(date,1,10),
-                      from_name || ' <' || from_addr || '>',
+                      from_name,
+                      from_addr,
                       subject
                FROM messages WHERE path = ? LIMIT 1""",
             (path,),
         ).fetchone()
         conn.close()
         if row:
-            date    = (row[0] or "")[:10]
-            sender  = (row[1] or "")[:28]
-            subject = (row[2] or "")[:55]
-            # ANSI 컬러: 날짜=청록, 발신자=초록, 제목=기본색
-            # fzf --ansi 플래그가 이미 활성화돼 있으므로 코드가 그대로 렌더링된다.
-            # sender 는 ANSI 코드를 포함하므로 시각적 28칸을 맞추기 위해
-            # 공백을 직접 계산한다 (ANSI 코드는 출력 폭에 포함되지 않음).
-            sender_plain = f"{sender:<28}"
+            date       = (row[0] or "")[:10]
+            name       = row[1] or ""
+            addr       = row[2] or ""
+            subject    = (row[3] or "")[:80]
+            sender_raw = name if name else addr
+            sender     = _visual_pad(_visual_truncate(sender_raw, 10), 10)
+            # Catppuccin Mocha truecolor ANSI
             return (
-                f"\033[36m{date}\033[0m"          # 청록
+                f"\033[38;2;180;190;254m{date}\033[0m"    # Lavender
                 f"  "
-                f"\033[32m{sender_plain}\033[0m"  # 초록
+                f"\033[38;2;166;227;161m{sender}\033[0m"  # Green
                 f"  "
                 f"{subject}"
             )
@@ -516,6 +586,14 @@ def main(
         #   Windows (cmd /c) : 큰따옴표   "{2}"
         #
         # Python/스크립트 경로도 동일하게 인용부호로 감싼다.
+        # Catppuccin Mocha 색상 (truecolor)
+        _MOCHA_COLORS = (
+            "bg:#1e1e2e,bg+:#313244,fg:#cdd6f4,fg+:#cdd6f4,"
+            "hl:#b4befe,hl+:#b4befe,border:#45475a,label:#b4befe,"
+            "prompt:#89b4fa,pointer:#f38ba8,marker:#a6e3a1,"
+            "info:#a6e3a1,header:#6c7086,spinner:#b4befe"
+        )
+
         if plat == "windows":
             q = '"'
             open_att_cmd  = f'{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}'
@@ -534,9 +612,8 @@ def main(
             help_popup    = (
                 f'{q}{py}{q} {q}{script_path}{q} --show-help '
                 f'| {q}{fzf_path}{q} --disabled --no-info '
-                f'--border=rounded --border-label=" 키 바인딩 도움말 " '
-                f'--color "border:#7aa2f7,label:#7aa2f7" '
-                f'--header {q}ESC 로 닫기{q}'
+                f'--border=rounded --border-label=" 도움말 " '
+                f'--color "{_MOCHA_COLORS}"'
             )
         else:
             q = "'"
@@ -555,38 +632,35 @@ def main(
             help_popup    = (
                 f"{q}{py}{q} {q}{script_path}{q} --show-help "
                 f"| {q}{fzf_path}{q} --disabled --no-info "
-                f"--border=rounded --border-label={q} 키 바인딩 도움말 {q} "
-                f"--color {q}border:#7aa2f7,label:#7aa2f7{q} "
-                f"--header {q}ESC 로 닫기{q}"
+                f"--border=rounded --border-label={q} 도움말 {q} "
+                f"--color {q}{_MOCHA_COLORS}{q}"
             )
 
         fzf_cmd = [
             fzf_path,
-            # ── Telescope 스타일 레이아웃 ────────────────────────────────
+            # ── television 스타일 레이아웃 ───────────────────────────────
             "--ansi",
             "--layout=reverse",
             "--border=rounded",
-            "--border-label= mailview ",
+            "--border-label= ✉ mailview ",
+            "--header-first",                    # 헤더를 목록 상단에 배치
             "--prompt", "검색> ",
-            "--info=inline",
-            # ── Tokyo Night 계열 색상 ────────────────────────────────────
-            "--color",
-            (
-                "bg:#1a1b26,bg+:#292e42,fg:#c0caf5,fg+:#c0caf5,"
-                "hl:#7aa2f7,hl+:#7aa2f7,border:#3b4261,label:#7aa2f7,"
-                "prompt:#7aa2f7,pointer:#ff9e64,marker:#9ece6a,"
-                "info:#9ece6a,header:#565f89,spinner:#7aa2f7"
-            ),
+            "--info=right",                      # 결과 수를 오른쪽 끝에 표시
+            "--pointer", "▶",
+            "--scrollbar", "▌",
+            "--padding", "0,1",
+            # ── Catppuccin Mocha 색상 ────────────────────────────────────
+            "--color", _MOCHA_COLORS,
             # ── 목록 구성 ────────────────────────────────────────────────
             "--delimiter", "\t",
             "--with-nth", "1",
             "--header-lines", "1",
-            "--header",
-            "Enter:열람  Ctrl-P:원문  Ctrl-O:편집  Ctrl-A:첨부  "
-            "Ctrl-B:본문검색  Ctrl-R:초기화  ?:도움말  ESC:종료",
+            # 핵심 3개만 표기 — 나머지는 ? 팝업
+            "--header", "Enter:열람  Ctrl-B:본문검색  ?:도움말",
             # ── 미리보기 ─────────────────────────────────────────────────
             "--preview", preview_cmd,
-            "--preview-window", "right:55%:border-left:wrap",
+            "--preview-window", "right:48%:border-left:wrap",
+            "--preview-label", " 미리보기 ",
             # ── 키 바인딩 ────────────────────────────────────────────────
             "--bind", f"ctrl-o:execute({editor_cmd})+abort",
             "--bind", f"ctrl-a:execute({open_att_cmd})",

@@ -56,10 +56,13 @@ class TestBuildFzfPreviewCmd:
             cmd = build_fzf_preview_cmd("C:/glow.exe", None)
         assert "type" in cmd
 
-    def test_glow_dark_style(self):
+    def test_glow_style_flag_present(self):
+        """-s 스타일 플래그가 항상 포함된다 (테마 파일 또는 dark 폴백)."""
         with patch("mailview.detect_platform", return_value="linux"):
             cmd = build_fzf_preview_cmd("/usr/bin/glow", None)
-        assert "-s dark" in cmd
+        assert "-s" in cmd
+        # mocha-glow.json 이 scripts/lib/ 에 있으므로 경로가 포함돼야 함
+        assert "mocha-glow.json" in cmd or "-s 'dark'" in cmd
 
     def test_wsl_uses_single_quotes(self):
         """WSL 은 linux 분기와 동일하게 단일 인용부호 사용"""

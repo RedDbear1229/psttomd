@@ -262,6 +262,10 @@ def build_fzf_preview_cmd(glow_path: str, bat_path: Optional[str]) -> str:
     우선순위: glow(마크다운 렌더링·컬러) → bat(구문 강조) → type/cat(플레인)
     bat 은 Ctrl-P 원문 보기 전용으로 분리한다.
 
+    glow 스타일:
+      scripts/lib/mocha-glow.json (Catppuccin Mocha) 파일이 있으면 사용하고,
+      없으면 내장 dark 테마로 폴백한다.
+
     경로 인용부호 전략:
       - Linux  : {2} 를 작은따옴표로 감쌈 → 공백·특수문자 안전
       - Windows: {2} 를 큰따옴표로 감쌈  → cmd.exe 공백 처리
@@ -276,23 +280,26 @@ def build_fzf_preview_cmd(glow_path: str, bat_path: Optional[str]) -> str:
     """
     plat = detect_platform()
 
+    # Catppuccin Mocha glow 테마 경로 — 없으면 내장 dark 폴백
+    _theme_file = Path(__file__).parent / "lib" / "mocha-glow.json"
+    glow_style  = str(_theme_file) if _theme_file.exists() else "dark"
+
     if plat == "windows":
-        # cmd.exe: 큰따옴표, 2>nul, type
-        item = '"{2}"'
+        item         = '"{2}"'
         null_redirect = "2>nul"
-        # glow 우선: 마크다운을 렌더링하여 컬러로 표시
-        # bat 은 Ctrl-P 원문 보기 전용으로 사용
-        fallback = f'"{bat_path}" --style=plain --color=always {item} {null_redirect}' if bat_path else f'type {item}'
-        return f'"{glow_path}" -s dark {item} {null_redirect} || {fallback}'
+        fallback = (
+            f'"{bat_path}" --style=plain --color=always {item} {null_redirect}'
+            if bat_path else f'type {item}'
+        )
+        return f'"{glow_path}" -s "{glow_style}" {item} {null_redirect} || {fallback}'
     else:
-        # sh: 작은따옴표, 2>/dev/null, cat
-        # fzf 가 {2} 를 확장한 뒤 작은따옴표로 감싸므로 공백 경로 안전
-        item = "'{2}'"
+        item         = "'{2}'"
         null_redirect = "2>/dev/null"
-        # glow 우선: 마크다운을 렌더링하여 컬러로 표시
-        # bat 은 Ctrl-P 원문 보기 전용으로 사용
-        fallback = f"'{bat_path}' --style=plain --color=always {item} {null_redirect}" if bat_path else f"cat {item}"
-        return f"'{glow_path}' -s dark {item} {null_redirect} || {fallback}"
+        fallback = (
+            f"'{bat_path}' --style=plain --color=always {item} {null_redirect}"
+            if bat_path else f"cat {item}"
+        )
+        return f"'{glow_path}' -s '{glow_style}' {item} {null_redirect} || {fallback}"
 
 
 def get_editor() -> str:

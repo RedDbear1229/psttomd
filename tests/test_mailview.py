@@ -16,6 +16,7 @@ from mailview import (
     resolve_glow_style,
     get_editor,
     get_attachments_from_md,
+    get_recent_paths,
     _print_fzf_lines,
     _FZF_COL_HEADER,
     _visual_width,
@@ -23,6 +24,7 @@ from mailview import (
     _visual_pad,
     _read_frontmatter_fields,
     handle_delete_message,
+    handle_bulk_delete,
 )
 
 
@@ -456,3 +458,172 @@ class TestHandleDeleteMessage:
              patch("mailview.load_config", return_value={"archive": {"root": str(tmp_path)}}):
             handle_delete_message(str(md), str(tmp_path))
         assert att_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# get_recent_paths — 정렬 파라미터
+# ---------------------------------------------------------------------------
+
+def _make_sort_db(tmp_path: Path) -> Path:
+    """정렬 테스트용 SQLite DB (메시지 3개) 를 생성한다."""
+    db_file = tmp_path / "index.sqlite"
+    conn = sqlite3.connect(str(db_file))
+    conn.executescript("""
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY,
+            msgid TEXT UNIQUE NOT NULL,
+            date TEXT, from_name TEXT, from_addr TEXT,
+            to_addrs TEXT, cc_addrs TEXT, subject TEXT,
+            folder TEXT, thread TEXT, source_pst TEXT,
+            path TEXT NOT NULL, n_attachments INTEGER DEFAULT 0
+        );
+        CREATE VIRTUAL TABLE messages_fts USING fts5(
+            subject, from_name, from_addr, to_addrs, body,
+            content='', tokenize='unicode61'
+        );
+        CREATE TABLE IF NOT EXISTS fts_sync (msgid TEXT PRIMARY KEY, path TEXT);
+    """)
+    rows = [
+        ("<a@test>", "2024-03-01", "Charlie", "charlie@x.com", "Zebra topic", "c.md"),
+        ("<b@test>", "2024-01-15", "Alice",   "alice@x.com",   "Apple topic", "a.md"),
+        ("<c@test>", "2024-02-20", "Bob",     "bob@x.com",     "Mango topic", "b.md"),
+    ]
+    for msgid, date, fname, faddr, subj, path in rows:
+        conn.execute(
+            "INSERT INTO messages (msgid, date, from_name, from_addr, subject, path) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (msgid, date, fname, faddr, subj, path),
+        )
+    conn.commit()
+    conn.close()
+    return db_file
+
+
+class TestGetRecentPathsSort:
+    def test_default_date_desc(self, tmp_path):
+        db = _make_sort_db(tmp_path)
+        paths = get_recent_paths(db, sort="date")
+        assert paths == ["c.md", "b.md", "a.md"]
+
+    def test_sort_from_asc(self, tmp_path):
+        db = _make_sort_db(tmp_path)
+        paths = get_recent_paths(db, sort="from")
+        assert paths == ["a.md", "b.md", "c.md"]
+
+    def test_sort_subject_asc(self, tmp_path):
+        db = _make_sort_db(tmp_path)
+        paths = get_recent_paths(db, sort="subject")
+        assert paths == ["a.md", "b.md", "c.md"]  # Apple < Mango < Zebra
+
+    def test_after_filter_with_sort(self, tmp_path):
+        db = _make_sort_db(tmp_path)
+        paths = get_recent_paths(db, after="2024-02-01", sort="date")
+        assert "a.md" not in paths   # 2024-01-15 < 2024-02-01
+
+    def test_unknown_sort_falls_back_to_date(self, tmp_path):
+        db = _make_sort_db(tmp_path)
+        paths = get_recent_paths(db, sort="invalid")
+        assert paths == ["c.md", "b.md", "a.md"]
+
+
+# ---------------------------------------------------------------------------
+# handle_bulk_delete
+# ---------------------------------------------------------------------------
+
+class TestHandleBulkDelete:
+    def _make_mds(self, tmp_path: Path, n: int = 2) -> list[Path]:
+        mds = []
+        for i in range(n):
+            md = tmp_path / f"mail{i}.md"
+            md.write_text(
+                f'---\nsubject: "제목{i}"\nfrom: "발신자{i}"\ndate: 2024-01-0{i+1}\n---\n\n본문{i}',
+                encoding="utf-8",
+            )
+            mds.append(md)
+        return mds
+
+    def _make_bulk_db(self, tmp_path: Path, md_paths: list[Path]) -> Path:
+        db_file = tmp_path / "index.sqlite"
+        conn = sqlite3.connect(str(db_file))
+        conn.executescript("""
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY, msgid TEXT UNIQUE NOT NULL,
+                date TEXT, from_name TEXT, from_addr TEXT,
+                to_addrs TEXT, cc_addrs TEXT, subject TEXT,
+                folder TEXT, thread TEXT, source_pst TEXT,
+                path TEXT NOT NULL, n_attachments INTEGER DEFAULT 0
+            );
+            CREATE VIRTUAL TABLE messages_fts USING fts5(
+                subject, from_name, from_addr, to_addrs, body,
+                content='', tokenize='unicode61'
+            );
+            CREATE TABLE IF NOT EXISTS fts_sync (msgid TEXT PRIMARY KEY, path TEXT);
+        """)
+        for i, md in enumerate(md_paths):
+            conn.execute(
+                "INSERT INTO messages (msgid, subject, from_name, from_addr, to_addrs, path) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (f"<bulk{i}@test>", f"제목{i}", f"발신자{i}", f"sender{i}@x.com", "[]", str(md)),
+            )
+            rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                "INSERT INTO messages_fts(rowid, subject, from_name, from_addr, to_addrs, body) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (rowid, f"제목{i}", f"발신자{i}", f"sender{i}@x.com", "[]", f"본문{i}"),
+            )
+        conn.commit()
+        conn.close()
+        return db_file
+
+    def test_cancel_keeps_files(self, tmp_path, monkeypatch):
+        mds = self._make_mds(tmp_path)
+        db_file = self._make_bulk_db(tmp_path, mds)
+        stdin_data = "\n".join(str(m) for m in mds) + "\n"
+        with patch("mailview.db_path", return_value=db_file), \
+             patch("mailview.load_config", return_value={"archive": {"root": str(tmp_path)}}), \
+             patch("mailview.detect_platform", return_value="linux"), \
+             patch("builtins.open", side_effect=OSError), \
+             patch("builtins.input", return_value="n"):
+            import io
+            monkeypatch.setattr("sys.stdin", io.StringIO(stdin_data))
+            handle_bulk_delete(str(tmp_path))
+        assert all(m.exists() for m in mds)
+
+    def test_confirm_deletes_all(self, tmp_path, monkeypatch):
+        mds = self._make_mds(tmp_path)
+        db_file = self._make_bulk_db(tmp_path, mds)
+        stdin_data = "\n".join(str(m) for m in mds) + "\n"
+        with patch("mailview.db_path", return_value=db_file), \
+             patch("mailview.load_config", return_value={"archive": {"root": str(tmp_path)}}), \
+             patch("mailview.detect_platform", return_value="linux"), \
+             patch("builtins.open", side_effect=OSError), \
+             patch("builtins.input", return_value="y"):
+            import io
+            monkeypatch.setattr("sys.stdin", io.StringIO(stdin_data))
+            handle_bulk_delete(str(tmp_path))
+        assert all(not m.exists() for m in mds)
+
+    def test_confirm_removes_from_db(self, tmp_path, monkeypatch):
+        mds = self._make_mds(tmp_path)
+        db_file = self._make_bulk_db(tmp_path, mds)
+        stdin_data = "\n".join(str(m) for m in mds) + "\n"
+        with patch("mailview.db_path", return_value=db_file), \
+             patch("mailview.load_config", return_value={"archive": {"root": str(tmp_path)}}), \
+             patch("mailview.detect_platform", return_value="linux"), \
+             patch("builtins.open", side_effect=OSError), \
+             patch("builtins.input", return_value="y"):
+            import io
+            monkeypatch.setattr("sys.stdin", io.StringIO(stdin_data))
+            handle_bulk_delete(str(tmp_path))
+        conn = sqlite3.connect(str(db_file))
+        count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        conn.close()
+        assert count == 0
+
+    def test_empty_stdin_returns_early(self, tmp_path, monkeypatch, capsys):
+        with patch("mailview.load_config", return_value={"archive": {"root": str(tmp_path)}}):
+            import io
+            monkeypatch.setattr("sys.stdin", io.StringIO(""))
+            handle_bulk_delete(str(tmp_path))
+        captured = capsys.readouterr()
+        assert "선택된 메일 없음" in captured.out

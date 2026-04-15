@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -133,12 +134,16 @@ _HELP_LINES: list[str] = [
     "   Ctrl-O     $EDITOR 로 열기",
     "   Ctrl-A     첨부 파일 목록 열기",
     "   Ctrl-D     메일 삭제 (확인 후 삭제)",
+    "   Ctrl-X     선택 메일 일괄 삭제 (Tab 으로 복수 선택)",
     "   Ctrl-B     본문 검색 모드로 전환",
-    "   Ctrl-R     전체 목록 초기화 (최근 100통)",
+    "   Ctrl-R     전체 목록 초기화 (최근 100통, 날짜순)",
+    "   Alt-S      제목순 정렬",
+    "   Alt-F      발신자순 정렬",
     "   Alt-1      오늘 수신 메일",
     "   Alt-2      최근 7일 메일",
     "   Alt-3      최근 30일 메일",
     "   Alt-4      최근 1년 메일",
+    "   Tab        멀티 선택 토글",
     "   ?          이 도움말 (ESC 로 닫기)",
     "   ESC        종료",
     "   " + "─" * 40,
@@ -174,26 +179,40 @@ def _require_tool(name: str, cfg: dict, install_hint: str = "") -> str:
 # 경로 목록 수집
 # ---------------------------------------------------------------------------
 
-def get_recent_paths(db: Path, limit: int = 100, after: str = "") -> list[str]:
-    """DB 에서 최근 발송일 기준 Markdown 파일 경로 목록을 반환한다.
+_SORT_ORDER: dict[str, str] = {
+    "date":    "date DESC",
+    "from":    "LOWER(COALESCE(NULLIF(from_name,''), from_addr, '')) ASC",
+    "subject": "LOWER(COALESCE(subject, '')) ASC",
+}
+
+
+def get_recent_paths(
+    db: Path,
+    limit: int = 100,
+    after: str = "",
+    sort: str = "date",
+) -> list[str]:
+    """DB 에서 Markdown 파일 경로 목록을 반환한다.
 
     Args:
         db:    인덱스 SQLite 경로.
         limit: 최대 반환 수 (기본 100).
         after: ISO 날짜 문자열 (YYYY-MM-DD). 지정 시 해당 날짜 이후 메일만 반환.
+        sort:  정렬 기준. "date" | "from" | "subject" (기본 "date").
 
     Returns:
-        날짜 내림차순 파일 경로 목록.
+        정렬 순서대로 파일 경로 목록.
     """
+    order_clause = _SORT_ORDER.get(sort, _SORT_ORDER["date"])
     conn = sqlite3.connect(str(db))
     if after:
         rows = conn.execute(
-            "SELECT path FROM messages WHERE date >= ? ORDER BY date DESC LIMIT ?",
+            f"SELECT path FROM messages WHERE date >= ? ORDER BY {order_clause} LIMIT ?",
             (after, limit),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT path FROM messages ORDER BY date DESC LIMIT ?", (limit,)
+            f"SELECT path FROM messages ORDER BY {order_clause} LIMIT ?", (limit,)
         ).fetchall()
     conn.close()
     return [r[0] for r in rows if r[0]]
@@ -702,6 +721,117 @@ def handle_delete_message(md_path: str, archive: str = "") -> None:
 
 
 # ---------------------------------------------------------------------------
+# 일괄 삭제 핸들러 (Ctrl-X — 멀티 선택 후 호출)
+# ---------------------------------------------------------------------------
+
+def handle_bulk_delete(archive: str = "") -> None:
+    """stdin 에서 경로를 읽어 복수의 MD 파일을 일괄 삭제한다.
+
+    fzf 의 execute() 액션에서 ``printf '%s\\n' {+2} | python mailview.py
+    --fzf-bulk-delete`` 형태로 호출된다. stdin 이 파이프이므로
+    확인 프롬프트는 /dev/tty (Linux) 또는 CONIN$ (Windows) 를 통해 읽는다.
+
+    Args:
+        archive: 아카이브 루트 경로 (비어 있으면 config 에서 로드).
+    """
+    raw = sys.stdin.read()
+    # Linux: printf '%s\n' {+2} → newline-separated
+    # Windows: echo {+2} → space-separated quoted ("p1" "p2")
+    lines = [p.strip().strip('"') for p in raw.splitlines() if p.strip()]
+    if len(lines) == 1 and '"' in raw:
+        # Windows 단일 라인 — 큰따옴표로 구분된 경로 파싱
+        lines = [p for p in shlex.split(lines[0]) if p.strip()]
+    paths = [p for p in lines if p]
+    if not paths:
+        click.echo("선택된 메일 없음.")
+        return
+
+    click.echo(f"\n일괄 삭제 대상 {len(paths)}개:")
+    for p in paths:
+        fm = _read_frontmatter_fields(p)
+        subj = fm.get("subject", Path(p).name)
+        date_s = fm.get("date", "")
+        click.echo(f"  • {date_s}  {subj}")
+
+    click.echo("")
+
+    # stdin 이 파이프이므로 /dev/tty (Linux) / CONIN$ (Windows) 에서 입력 읽기
+    plat = detect_platform()
+    try:
+        tty_path = "CONIN$" if plat == "windows" else "/dev/tty"
+        tty = open(tty_path)    # noqa: WPS515
+    except OSError:
+        tty = None
+
+    try:
+        prompt_msg = f"MD 파일 {len(paths)}개를 모두 삭제하시겠습니까? [y/N]: "
+        if tty:
+            click.echo(prompt_msg, nl=False)
+            answer = tty.readline().strip().lower()
+        else:
+            answer = input(prompt_msg).strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        click.echo("\n취소.")
+        return
+    finally:
+        if tty:
+            tty.close()
+
+    if answer != "y":
+        click.echo("취소.")
+        return
+
+    cfg = load_config()
+    if archive:
+        cfg["archive"]["root"] = archive
+    db = db_path(cfg)
+
+    ok, fail = 0, 0
+    for p in paths:
+        try:
+            # DB 정리
+            if db.exists():
+                conn = sqlite3.connect(str(db))
+                try:
+                    row = conn.execute(
+                        "SELECT id, subject, from_name, from_addr, to_addrs "
+                        "FROM messages WHERE path = ?", (p,)
+                    ).fetchone()
+                    if row:
+                        rowid, subj, fname, faddr, toaddrs = row
+                        body = ""
+                        try:
+                            text = Path(p).read_text(encoding="utf-8")
+                            if text.startswith("---"):
+                                end = text.find("\n---\n", 3)
+                                body = text[end + 4:].strip() if end != -1 else text.strip()
+                            else:
+                                body = text.strip()
+                        except OSError:
+                            pass
+                        conn.execute(
+                            "INSERT INTO messages_fts"
+                            "(messages_fts, rowid, subject, from_name, from_addr, to_addrs, body)"
+                            " VALUES('delete', ?, ?, ?, ?, ?, ?)",
+                            (rowid, subj or "", fname or "", faddr or "",
+                             toaddrs or "", body),
+                        )
+                        conn.execute("DELETE FROM messages WHERE id = ?", (rowid,))
+                        conn.execute("DELETE FROM fts_sync WHERE path = ?", (p,))
+                        conn.commit()
+                finally:
+                    conn.close()
+            # 파일 삭제
+            Path(p).unlink(missing_ok=True)
+            ok += 1
+        except (OSError, sqlite3.Error) as e:
+            click.echo(f"✗ 실패 [{Path(p).name}]: {e}", err=True)
+            fail += 1
+
+    click.echo(f"✓ {ok}개 삭제 완료." + (f"  ✗ {fail}개 실패." if fail else ""))
+
+
+# ---------------------------------------------------------------------------
 # CLI 커맨드
 # ---------------------------------------------------------------------------
 
@@ -719,13 +849,18 @@ def handle_delete_message(md_path: str, archive: str = "") -> None:
               help="내부용: 지정 MD 파일의 첨부 파일 열기")
 @click.option("--delete-msg", "_delete_msg",  default="", hidden=True,
               help="내부용: 지정 MD 파일 삭제")
-@click.option("--fzf-input",  "_fzf_input",   is_flag=True, hidden=True,
+@click.option("--fzf-input",       "_fzf_input",       is_flag=True, hidden=True,
               help="내부용: fzf reload 용 레이블\\t경로 출력")
-@click.option("--show-help",  "_show_help",   is_flag=True, hidden=True,
+@click.option("--show-help",       "_show_help",       is_flag=True, hidden=True,
               help="내부용: 키 바인딩 도움말 출력")
+@click.option("--fzf-bulk-delete", "_fzf_bulk_delete", is_flag=True, hidden=True,
+              help="내부용: stdin 에서 경로를 읽어 일괄 삭제")
+@click.option("--sort", default="date", hidden=True,
+              help="내부용: fzf-input 정렬 기준 (date|from|subject)")
 def main(
     query, from_filter, after, before, folder, thread,
     body_filter, archive, _open_att, _delete_msg, _fzf_input, _show_help,
+    _fzf_bulk_delete, sort,
 ):
     """fzf + glow 인터랙티브 메일 뷰어."""
 
@@ -745,7 +880,12 @@ def main(
             click.echo(line)
         return
 
-    # ── fzf reload 출력 모드 (Ctrl-B / Ctrl-R) ───────────────────────────
+    # ── 일괄 삭제 모드 (Ctrl-X) ─────────────────────────────────────────
+    if _fzf_bulk_delete:
+        handle_bulk_delete(archive)
+        return
+
+    # ── fzf reload 출력 모드 (Ctrl-B / Ctrl-R / Alt-* ) ─────────────────
     if _fzf_input:
         cfg = load_config()
         if archive:
@@ -755,7 +895,7 @@ def main(
             archive_arg = ["--archive", cfg["archive"]["root"]] if archive else []
             paths = get_paths_from_query(archive_arg + ["--body", body_filter])
         else:
-            paths = get_recent_paths(db, after=after)
+            paths = get_recent_paths(db, after=after, sort=sort)
         _print_fzf_lines(paths, db)
         return
 
@@ -836,39 +976,51 @@ def main(
 
         if plat == "windows":
             q = '"'
-            open_att_cmd  = f'{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}'
-            delete_cmd    = (
+            open_att_cmd   = f'{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}'
+            delete_cmd     = (
                 f'{q}{py}{q} {q}{script_path}{q} --delete-msg {q}{{2}}{q} '
                 f'--archive {q}{archive_path}{q}'
             )
-            editor_cmd    = f'{q}{editor}{q} {q}{{2}}{q}'
-            bat_cmd       = f'{q}{bat_path}{q} --style=full {q}{{2}}{q}' if bat_path else None
-            pager_cmd     = f'more {q}{{2}}{q}'
-            body_reload   = (
+            bulk_del_cmd   = (
+                f'echo {{+2}} | {q}{py}{q} {q}{script_path}{q} --fzf-bulk-delete '
+                f'--archive {q}{archive_path}{q}'
+            )
+            editor_cmd     = f'{q}{editor}{q} {q}{{2}}{q}'
+            bat_cmd        = f'{q}{bat_path}{q} --style=full {q}{{2}}{q}' if bat_path else None
+            pager_cmd      = f'more {q}{{2}}{q}'
+            body_reload    = (
                 f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
                 f'--body {q}{{q}}{q} --archive {q}{archive_path}{q}'
             )
-            reset_reload  = (
+            reset_reload   = (
                 f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
                 f'--archive {q}{archive_path}{q}'
             )
-            today_reload  = (
+            sort_from_reload = (
+                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
+                f'--sort from --archive {q}{archive_path}{q}'
+            )
+            sort_subj_reload = (
+                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
+                f'--sort subject --archive {q}{archive_path}{q}'
+            )
+            today_reload   = (
                 f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
                 f'--after {q}{_today_iso}{q} --archive {q}{archive_path}{q}'
             )
-            week_reload   = (
+            week_reload    = (
                 f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
                 f'--after {q}{_week_iso}{q} --archive {q}{archive_path}{q}'
             )
-            month_reload  = (
+            month_reload   = (
                 f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
                 f'--after {q}{_month_iso}{q} --archive {q}{archive_path}{q}'
             )
-            year_reload   = (
+            year_reload    = (
                 f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
                 f'--after {q}{_year_iso}{q} --archive {q}{archive_path}{q}'
             )
-            help_popup    = (
+            help_popup     = (
                 f'{q}{py}{q} {q}{script_path}{q} --show-help '
                 f'| {q}{fzf_path}{q} --disabled --no-info '
                 f'--border=rounded --border-label=" 도움말 " '
@@ -876,39 +1028,52 @@ def main(
             )
         else:
             q = "'"
-            open_att_cmd  = f"{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}"
-            delete_cmd    = (
+            open_att_cmd   = f"{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}"
+            delete_cmd     = (
                 f"{q}{py}{q} {q}{script_path}{q} --delete-msg {q}{{2}}{q} "
                 f"--archive {q}{archive_path}{q}"
             )
-            editor_cmd    = f"{q}{editor}{q} {q}{{2}}{q}"
-            bat_cmd       = f"{q}{bat_path}{q} --style=full {q}{{2}}{q}" if bat_path else None
-            pager_cmd     = f"less {q}{{2}}{q}"
-            body_reload   = (
+            bulk_del_cmd   = (
+                f"printf '%s\\n' {{+2}} | "
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-bulk-delete "
+                f"--archive {q}{archive_path}{q}"
+            )
+            editor_cmd     = f"{q}{editor}{q} {q}{{2}}{q}"
+            bat_cmd        = f"{q}{bat_path}{q} --style=full {q}{{2}}{q}" if bat_path else None
+            pager_cmd      = f"less {q}{{2}}{q}"
+            body_reload    = (
                 f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
                 f"--body {q}{{q}}{q} --archive {q}{archive_path}{q}"
             )
-            reset_reload  = (
+            reset_reload   = (
                 f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
                 f"--archive {q}{archive_path}{q}"
             )
-            today_reload  = (
+            sort_from_reload = (
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
+                f"--sort from --archive {q}{archive_path}{q}"
+            )
+            sort_subj_reload = (
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
+                f"--sort subject --archive {q}{archive_path}{q}"
+            )
+            today_reload   = (
                 f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
                 f"--after {q}{_today_iso}{q} --archive {q}{archive_path}{q}"
             )
-            week_reload   = (
+            week_reload    = (
                 f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
                 f"--after {q}{_week_iso}{q} --archive {q}{archive_path}{q}"
             )
-            month_reload  = (
+            month_reload   = (
                 f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
                 f"--after {q}{_month_iso}{q} --archive {q}{archive_path}{q}"
             )
-            year_reload   = (
+            year_reload    = (
                 f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
                 f"--after {q}{_year_iso}{q} --archive {q}{archive_path}{q}"
             )
-            help_popup    = (
+            help_popup     = (
                 f"{q}{py}{q} {q}{script_path}{q} --show-help "
                 f"| {q}{fzf_path}{q} --disabled --no-info "
                 f"--border=rounded --border-label={q} 도움말 {q} "
@@ -930,20 +1095,24 @@ def main(
             "--padding", "0,1",
             # ── Catppuccin Mocha 색상 ────────────────────────────────────
             "--color", _FZF_COLORS,
+            # ── 멀티 선택 ────────────────────────────────────────────────
+            "--multi",
             # ── 목록 구성 ────────────────────────────────────────────────
             "--delimiter", "\t",
             "--with-nth", "1",
             "--header-lines", "1",
-            "--header", "Enter:열람  Ctrl-B:본문검색  Alt-1~4:날짜  ?:도움말",
+            "--header", "Enter:열람  Tab:선택  Ctrl-X:일괄삭제  Alt-S/F:정렬  ?:도움말",
             # ── 미리보기 ─────────────────────────────────────────────────
             "--preview", preview_cmd,
             "--preview-window", "right:48%:border-left:wrap",
             "--preview-label", " 미리보기 ",
             # ── 키 바인딩 ────────────────────────────────────────────────
             "--bind", "focus:change-preview-label( {2} )",
+            "--bind", "tab:toggle+down",
             "--bind", f"ctrl-o:execute({editor_cmd})+abort",
             "--bind", f"ctrl-a:execute({open_att_cmd})",
             "--bind", f"ctrl-d:execute({delete_cmd})+reload({reset_reload})",
+            "--bind", f"ctrl-x:execute({bulk_del_cmd})+reload({reset_reload})",
             "--bind", (
                 f"ctrl-b:change-prompt(본문검색> )"
                 f"+reload({body_reload})"
@@ -952,6 +1121,16 @@ def main(
             "--bind", (
                 f"ctrl-r:change-prompt(검색> )"
                 f"+reload({reset_reload})"
+                f"+clear-query"
+            ),
+            "--bind", (
+                f"alt-s:change-prompt(제목순> )"
+                f"+reload({sort_subj_reload})"
+                f"+clear-query"
+            ),
+            "--bind", (
+                f"alt-f:change-prompt(발신자순> )"
+                f"+reload({sort_from_reload})"
                 f"+clear-query"
             ),
             "--bind", (

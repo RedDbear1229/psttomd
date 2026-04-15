@@ -350,8 +350,22 @@ def extract_frontmatter(md_path: Path) -> dict | None:
 
 def main() -> None:
     """명령행 인자를 파싱하고 인덱싱을 실행한다."""
-    parser = argparse.ArgumentParser(description="SQLite FTS5 인덱스 빌더")
     _default_archive = load_config()["archive"]["root"]
+    parser = argparse.ArgumentParser(
+        description="SQLite FTS5 인덱스 빌더",
+        epilog=(
+            "동작 모드:\n"
+            "  기본(증분)   index_staging.jsonl 만 처리 — pst2md 변환 직후 사용\n"
+            "  --rebuild    아카이브 전체 재스캔 — 인덱스 손상 복구 또는 최초 구축 시\n"
+            "\n"
+            "관련 도구:\n"
+            "  pst2md       PST → MD 변환 (변환 완료 후 index_staging.jsonl 생성)\n"
+            "  mailgrep     FTS5 전문 검색: mailgrep '키워드' --after 2023-01-01\n"
+            "  mailview     fzf + glow 인터랙티브 뷰어: mailview '키워드'\n"
+            "  mailstat     아카이브 통계 요약: mailstat summary\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--archive",     default=_default_archive, help="아카이브 루트")
     parser.add_argument("--incremental", action="store_true", help="스테이징 파일만 처리")
     parser.add_argument("--rebuild",     action="store_true", help="전체 재구축")

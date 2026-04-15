@@ -456,7 +456,32 @@ def message_to_md(
             f'---'
         )
 
-        content = f"{frontmatter}\n\n# {subject}\n\n{body}\n\n---\n\n관련: {related_line}\n"
+        # ── 메일 헤더 블록 (본문 상단에 표시) ────────────────────────────
+        if from_addr and from_addr != from_raw:
+            from_display = f"{from_raw} <{from_addr}>"
+        else:
+            from_display = from_raw or from_addr or "(발신자 없음)"
+
+        to_display = ", ".join(to_list) if to_list else "(수신자 없음)"
+        date_display = date_to_iso(dt) or "(날짜 없음)"
+
+        header_block = (
+            f"**보낸사람:** {from_display}  \n"
+            f"**받는사람:** {to_display}  \n"
+        )
+        if cc_list:
+            header_block += f"**참조:** {', '.join(cc_list)}  \n"
+        header_block += f"**날짜:** {date_display}"
+
+        content = (
+            f"{frontmatter}\n\n"
+            f"# {subject}\n\n"
+            f"{header_block}\n\n"
+            f"---\n\n"
+            f"{body}\n\n"
+            f"---\n\n"
+            f"관련: {related_line}\n"
+        )
 
         meta = {
             "msgid":         msgid,

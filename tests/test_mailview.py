@@ -26,6 +26,15 @@ from mailview import (
     _read_frontmatter_fields,
     handle_delete_message,
     handle_bulk_delete,
+    auto_update_index,
+    extract_urls,
+    get_tag_list,
+    _update_frontmatter_tags,
+    handle_tag_message,
+    find_duplicate_groups,
+    format_stats_for_display,
+    build_thread_tree,
+    format_thread_tree,
 )
 
 
@@ -697,3 +706,474 @@ class TestGetFolderList:
         conn.commit()
         conn.close()
         assert get_folder_list(db_file) == []
+
+
+# ---------------------------------------------------------------------------
+# auto_update_index
+# ---------------------------------------------------------------------------
+
+class TestAutoUpdateIndex:
+    """auto_update_index() — 인덱스 자동 갱신."""
+
+    def _make_db(self, tmp_path: Path) -> Path:
+        db_file = tmp_path / "index.sqlite"
+        db_file.write_bytes(b"")  # 빈 DB 파일 (존재만 하면 됨)
+        return db_file
+
+    def _cfg(self, tmp_path: Path, auto_index: bool = True) -> dict:
+        return {
+            "archive": {"root": str(tmp_path)},
+            "mailview": {"auto_index": auto_index},
+        }
+
+    def test_disabled_skips_subprocess(self, tmp_path):
+        """auto_index=False 이면 subprocess 를 호출하지 않는다."""
+        db = self._make_db(tmp_path)
+        cfg = self._cfg(tmp_path, auto_index=False)
+        with patch("mailview.db_path", return_value=db), \
+             patch("mailview.subprocess.run") as mock_run:
+            auto_update_index(tmp_path, cfg)
+        mock_run.assert_not_called()
+
+    def test_no_db_skips_subprocess(self, tmp_path):
+        """DB 파일이 없으면 subprocess 를 호출하지 않는다."""
+        cfg = self._cfg(tmp_path)
+        with patch("mailview.subprocess.run") as mock_run:
+            auto_update_index(tmp_path, cfg)
+        mock_run.assert_not_called()
+
+    def test_no_new_files_skips_subprocess(self, tmp_path):
+        """새 MD 파일이 없으면 subprocess 를 호출하지 않는다."""
+        db = self._make_db(tmp_path)
+        archive_dir = tmp_path / "archive" / "2024" / "01" / "01"
+        archive_dir.mkdir(parents=True)
+        md = archive_dir / "test.md"
+        md.write_text("---\nsubject: test\n---\nbody", encoding="utf-8")
+        import os
+        # MD 파일의 mtime 을 DB 보다 이전으로 설정
+        old_time = db.stat().st_mtime - 10
+        os.utime(md, (old_time, old_time))
+        cfg = self._cfg(tmp_path)
+        with patch("mailview.db_path", return_value=db), \
+             patch("mailview.subprocess.run") as mock_run:
+            auto_update_index(tmp_path, cfg)
+        mock_run.assert_not_called()
+
+    def test_new_file_triggers_subprocess(self, tmp_path):
+        """DB 보다 새 MD 파일이 있으면 build_index.py 를 호출한다."""
+        import time
+        db = self._make_db(tmp_path)
+        archive_dir = tmp_path / "archive" / "2024" / "01" / "01"
+        archive_dir.mkdir(parents=True)
+        md = archive_dir / "test.md"
+        # MD 파일을 DB 보다 나중에 생성
+        time.sleep(0.01)
+        md.write_text("---\nsubject: test\n---\nbody", encoding="utf-8")
+        cfg = self._cfg(tmp_path)
+        mock_result = patch("mailview.subprocess.run").__enter__ if False else None
+        with patch("mailview.db_path", return_value=db), \
+             patch("mailview.subprocess.run",
+                   return_value=type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+                   ) as mock_run:
+            auto_update_index(tmp_path, cfg)
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]  # argv list
+        assert any("build_index.py" in a for a in call_args)
+        assert str(tmp_path) in call_args
+
+
+# ---------------------------------------------------------------------------
+# extract_urls
+# ---------------------------------------------------------------------------
+
+class TestExtractUrls:
+    def _make_md(self, tmp_path: Path, body: str) -> str:
+        md = tmp_path / "test.md"
+        md.write_text(f"---\nsubject: test\n---\n{body}", encoding="utf-8")
+        return str(md)
+
+    def test_finds_http_url(self, tmp_path):
+        path = self._make_md(tmp_path, "참조: http://example.com/page")
+        assert "http://example.com/page" in extract_urls(path)
+
+    def test_finds_https_url(self, tmp_path):
+        path = self._make_md(tmp_path, "링크: https://example.com/path?a=1")
+        assert "https://example.com/path?a=1" in extract_urls(path)
+
+    def test_deduplicates_urls(self, tmp_path):
+        body = "https://example.com\nhttps://example.com"
+        path = self._make_md(tmp_path, body)
+        urls = extract_urls(path)
+        assert urls.count("https://example.com") == 1
+
+    def test_excludes_frontmatter_urls(self, tmp_path):
+        md = tmp_path / "fm.md"
+        md.write_text(
+            "---\nsource: https://frontmatter.url\n---\n본문 텍스트",
+            encoding="utf-8",
+        )
+        urls = extract_urls(str(md))
+        assert "https://frontmatter.url" not in urls
+
+    def test_strips_trailing_punctuation(self, tmp_path):
+        path = self._make_md(tmp_path, "링크: https://example.com/page.")
+        urls = extract_urls(path)
+        assert "https://example.com/page" in urls
+
+    def test_no_urls_returns_empty(self, tmp_path):
+        path = self._make_md(tmp_path, "URL 없는 본문 텍스트")
+        assert extract_urls(path) == []
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        assert extract_urls(str(tmp_path / "nonexistent.md")) == []
+
+
+# ---------------------------------------------------------------------------
+# 태그 관리: get_tag_list / _update_frontmatter_tags / handle_tag_message
+# ---------------------------------------------------------------------------
+
+def _make_tag_db(tmp_path: Path) -> Path:
+    """태그 테스트용 SQLite DB 를 생성한다."""
+    db_file = tmp_path / "index.sqlite"
+    conn = sqlite3.connect(str(db_file))
+    conn.executescript("""
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY, msgid TEXT UNIQUE NOT NULL,
+            date TEXT, from_name TEXT, from_addr TEXT,
+            to_addrs TEXT, cc_addrs TEXT, subject TEXT,
+            folder TEXT, thread TEXT, source_pst TEXT,
+            path TEXT NOT NULL, n_attachments INTEGER DEFAULT 0,
+            tags TEXT DEFAULT ''
+        );
+        CREATE TABLE fts_sync (msgid TEXT PRIMARY KEY, path TEXT);
+    """)
+    rows = [
+        ("<a>", "work, urgent",  "a.md"),
+        ("<b>", "work",         "b.md"),
+        ("<c>", "personal",     "c.md"),
+        ("<d>", "",             "d.md"),
+    ]
+    for msgid, tags, path in rows:
+        conn.execute(
+            "INSERT INTO messages (msgid, tags, path) VALUES (?, ?, ?)",
+            (msgid, tags, path),
+        )
+    conn.commit()
+    conn.close()
+    return db_file
+
+
+class TestGetTagList:
+    def test_returns_unique_tags(self, tmp_path):
+        db = _make_tag_db(tmp_path)
+        tags = get_tag_list(db)
+        assert tags.count("work") == 1
+
+    def test_excludes_empty_tags(self, tmp_path):
+        db = _make_tag_db(tmp_path)
+        assert "" not in get_tag_list(db)
+
+    def test_sorted_alphabetically(self, tmp_path):
+        db = _make_tag_db(tmp_path)
+        tags = get_tag_list(db)
+        assert tags == sorted(tags)
+
+    def test_all_distinct_tags(self, tmp_path):
+        db = _make_tag_db(tmp_path)
+        assert set(get_tag_list(db)) == {"personal", "urgent", "work"}
+
+
+class TestUpdateFrontmatterTags:
+    def _make_md(self, tmp_path: Path, extra_fm: str = "") -> Path:
+        md = tmp_path / "test.md"
+        md.write_text(
+            f"---\nsubject: Test\n{extra_fm}---\n본문\n",
+            encoding="utf-8",
+        )
+        return md
+
+    def test_adds_tags_when_none(self, tmp_path):
+        md = self._make_md(tmp_path)
+        assert _update_frontmatter_tags(str(md), ["work", "urgent"])
+        text = md.read_text(encoding="utf-8")
+        assert "tags: [work, urgent]" in text
+
+    def test_replaces_existing_tags(self, tmp_path):
+        md = self._make_md(tmp_path, "tags: [old]\n")
+        assert _update_frontmatter_tags(str(md), ["new"])
+        text = md.read_text(encoding="utf-8")
+        assert "tags: [new]" in text
+        assert "old" not in text
+
+    def test_removes_tags_when_empty(self, tmp_path):
+        md = self._make_md(tmp_path, "tags: [work]\n")
+        assert _update_frontmatter_tags(str(md), [])
+        text = md.read_text(encoding="utf-8")
+        assert "tags:" not in text
+
+    def test_missing_file_returns_false(self, tmp_path):
+        assert not _update_frontmatter_tags(str(tmp_path / "x.md"), ["a"])
+
+
+class TestHandleTagMessage:
+    def _make_md(self, tmp_path: Path) -> Path:
+        md = tmp_path / "msg.md"
+        md.write_text("---\nsubject: Test\n---\n본문\n", encoding="utf-8")
+        return md
+
+    def _make_db(self, tmp_path: Path, md_path: str) -> Path:
+        db_file = tmp_path / "index.sqlite"
+        conn = sqlite3.connect(str(db_file))
+        conn.executescript("""
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY, msgid TEXT UNIQUE NOT NULL,
+                subject TEXT, path TEXT NOT NULL, tags TEXT DEFAULT ''
+            );
+        """)
+        conn.execute(
+            "INSERT INTO messages (msgid, subject, path, tags) VALUES (?, ?, ?, ?)",
+            ("<test>", "Test", md_path, ""),
+        )
+        conn.commit()
+        conn.close()
+        return db_file
+
+    def test_sets_tags(self, tmp_path):
+        md = self._make_md(tmp_path)
+        db = self._make_db(tmp_path, str(md))
+        with patch("mailview.db_path", return_value=db), \
+             patch("mailview.load_config", return_value={"archive": {"root": str(tmp_path)}}), \
+             patch("builtins.input", return_value="work, urgent"):
+            handle_tag_message(str(md), str(tmp_path))
+        text = md.read_text(encoding="utf-8")
+        assert "tags: [work, urgent]" in text
+
+    def test_clears_tags_on_empty_input(self, tmp_path):
+        md = self._make_md(tmp_path)
+        db = self._make_db(tmp_path, str(md))
+        with patch("mailview.db_path", return_value=db), \
+             patch("mailview.load_config", return_value={"archive": {"root": str(tmp_path)}}), \
+             patch("builtins.input", return_value=""):
+            handle_tag_message(str(md), str(tmp_path))
+        text = md.read_text(encoding="utf-8")
+        assert "tags:" not in text
+
+    def test_missing_file_returns_early(self, tmp_path, capsys):
+        with patch("mailview.load_config", return_value={"archive": {"root": str(tmp_path)}}):
+            handle_tag_message(str(tmp_path / "none.md"), str(tmp_path))
+        captured = capsys.readouterr()
+        assert "파일 없음" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# find_duplicate_groups
+# ---------------------------------------------------------------------------
+
+def _make_dedupe_db(tmp_path: Path, rows: list[tuple]) -> Path:
+    """중복 감지 테스트용 DB 와 MD 파일을 생성한다.
+
+    rows: [(msgid, date, from_addr, subject, path_name), ...]
+    """
+    db_file = tmp_path / "index.sqlite"
+    conn = sqlite3.connect(str(db_file))
+    conn.executescript("""
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY, msgid TEXT UNIQUE NOT NULL,
+            date TEXT, from_name TEXT, from_addr TEXT,
+            to_addrs TEXT, cc_addrs TEXT, subject TEXT,
+            folder TEXT, thread TEXT, source_pst TEXT,
+            path TEXT NOT NULL, n_attachments INTEGER DEFAULT 0,
+            tags TEXT DEFAULT ''
+        );
+        CREATE VIRTUAL TABLE messages_fts USING fts5(
+            subject, from_name, from_addr, to_addrs, body,
+            content='', tokenize='unicode61'
+        );
+        CREATE TABLE fts_sync (msgid TEXT PRIMARY KEY, path TEXT);
+    """)
+    for msgid, date, from_addr, subject, path_name in rows:
+        p = tmp_path / path_name
+        p.write_text(f"---\nsubject: {subject}\n---\n", encoding="utf-8")
+        conn.execute(
+            "INSERT INTO messages (msgid, date, from_addr, subject, path) VALUES (?,?,?,?,?)",
+            (msgid, date, from_addr, subject, str(p)),
+        )
+    conn.commit()
+    conn.close()
+    return db_file
+
+
+class TestFindDuplicateGroups:
+    def test_same_content_detected(self, tmp_path):
+        """동일한 날짜+발신자+제목을 가진 메일은 중복으로 감지된다."""
+        rows = [
+            ("<aaa>", "2024-01-01", "a@b.com", "Test", "a.md"),
+            ("<bbb>", "2024-01-01", "a@b.com", "Test", "b.md"),
+        ]
+        db = _make_dedupe_db(tmp_path, rows)
+        groups = find_duplicate_groups(db)
+        assert len(groups) == 1
+        assert len(groups[0]) == 2
+
+    def test_no_duplicates_returns_empty(self, tmp_path):
+        rows = [
+            ("<aaa>", "2024-01-01", "a@b.com", "A", "a.md"),
+            ("<bbb>", "2024-01-02", "b@c.com", "B", "b.md"),
+        ]
+        db = _make_dedupe_db(tmp_path, rows)
+        groups = find_duplicate_groups(db)
+        assert groups == []
+
+    def test_nonexistent_paths_excluded(self, tmp_path):
+        """존재하지 않는 파일 경로는 그룹에서 제외된다."""
+        rows = [
+            ("<aaa>", "2024-01-01", "a@b.com", "Test", "a.md"),
+            ("<bbb>", "2024-01-01", "a@b.com", "Test", "b.md"),
+        ]
+        db = _make_dedupe_db(tmp_path, rows)
+        # b.md 를 삭제해 존재하지 않게 함
+        (tmp_path / "b.md").unlink()
+        groups = find_duplicate_groups(db)
+        # 파일이 하나뿐이면 그룹 미포함
+        assert groups == []
+
+
+# ---------------------------------------------------------------------------
+# format_stats_for_display
+# ---------------------------------------------------------------------------
+
+def _make_stats_db(tmp_path: Path) -> Path:
+    """통계 테스트용 SQLite DB 를 생성한다."""
+    db_file = tmp_path / "index.sqlite"
+    conn = sqlite3.connect(str(db_file))
+    conn.executescript("""
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY, msgid TEXT UNIQUE NOT NULL,
+            date TEXT, from_name TEXT, from_addr TEXT,
+            to_addrs TEXT, cc_addrs TEXT, subject TEXT,
+            folder TEXT, thread TEXT, source_pst TEXT,
+            path TEXT NOT NULL, n_attachments INTEGER DEFAULT 0,
+            tags TEXT DEFAULT ''
+        );
+    """)
+    rows = [
+        ("<a>", "2024-01-15T10:00:00+00:00", "Alice", "a@b.com", "Hello",  1),
+        ("<b>", "2024-02-10T10:00:00+00:00", "Bob",   "b@c.com", "World",  0),
+        ("<c>", "2024-02-20T10:00:00+00:00", "Alice", "a@b.com", "Again",  2),
+    ]
+    for msgid, date, name, addr, subj, n_att in rows:
+        conn.execute(
+            "INSERT INTO messages (msgid, date, from_name, from_addr, subject, path, n_attachments)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (msgid, date, name, addr, subj, f"{msgid}.md", n_att),
+        )
+    conn.commit()
+    conn.close()
+    return db_file
+
+
+class TestFormatStatsForDisplay:
+    def test_returns_list_of_strings(self, tmp_path):
+        db = _make_stats_db(tmp_path)
+        lines = format_stats_for_display(db, tmp_path)
+        assert isinstance(lines, list)
+        assert all(isinstance(l, str) for l in lines)
+
+    def test_contains_total_count(self, tmp_path):
+        db = _make_stats_db(tmp_path)
+        lines = format_stats_for_display(db, tmp_path)
+        text = "\n".join(lines)
+        assert "3" in text  # 총 3통
+
+    def test_no_db_returns_error_message(self, tmp_path):
+        lines = format_stats_for_display(tmp_path / "noexist.sqlite", tmp_path)
+        assert any("인덱스 없음" in l for l in lines)
+
+    def test_contains_sender_info(self, tmp_path):
+        db = _make_stats_db(tmp_path)
+        lines = format_stats_for_display(db, tmp_path)
+        text = "\n".join(lines)
+        assert "Alice" in text or "a@b.com" in text
+
+
+# ---------------------------------------------------------------------------
+# build_thread_tree / format_thread_tree
+# ---------------------------------------------------------------------------
+
+def _make_thread_db(tmp_path: Path) -> Path:
+    """스레드 트리 테스트용 DB 를 생성한다."""
+    db_file = tmp_path / "index.sqlite"
+    conn = sqlite3.connect(str(db_file))
+    conn.executescript("""
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY, msgid TEXT UNIQUE NOT NULL,
+            date TEXT, from_name TEXT, from_addr TEXT,
+            to_addrs TEXT, cc_addrs TEXT, subject TEXT,
+            folder TEXT, thread TEXT, source_pst TEXT,
+            path TEXT NOT NULL, n_attachments INTEGER DEFAULT 0,
+            tags TEXT DEFAULT '', in_reply_to TEXT DEFAULT ''
+        );
+    """)
+    # root → reply1 → reply2 chain
+    rows = [
+        ("<root>",   "",       "2024-01-01T10:00:00", "Root message",  "t1", "root.md"),
+        ("<r1>",     "<root>", "2024-01-02T10:00:00", "Reply 1",       "t1", "r1.md"),
+        ("<r2>",     "<r1>",   "2024-01-03T10:00:00", "Reply 2",       "t1", "r2.md"),
+        ("<other>",  "",       "2024-01-01T10:00:00", "Other thread",  "t2", "other.md"),
+    ]
+    for msgid, irt, date, subj, thread, path in rows:
+        conn.execute(
+            "INSERT INTO messages (msgid, in_reply_to, date, subject, thread, path)"
+            " VALUES (?,?,?,?,?,?)",
+            (msgid, irt, date, subj, thread, str(tmp_path / path)),
+        )
+    conn.commit()
+    conn.close()
+    return db_file
+
+
+class TestBuildThreadTree:
+    def test_returns_all_thread_messages(self, tmp_path):
+        db = _make_thread_db(tmp_path)
+        tree = build_thread_tree(db, "t1")
+        assert len(tree) == 3
+
+    def test_root_has_depth_zero(self, tmp_path):
+        db = _make_thread_db(tmp_path)
+        tree = build_thread_tree(db, "t1")
+        depths = [t[0] for t in tree]
+        assert 0 in depths
+
+    def test_child_has_greater_depth(self, tmp_path):
+        db = _make_thread_db(tmp_path)
+        tree = build_thread_tree(db, "t1")
+        depth_map = {t[2]: t[0] for t in tree}  # msgid → depth
+        assert depth_map["<r1>"] > depth_map["<root>"]
+        assert depth_map["<r2>"] > depth_map["<r1>"]
+
+    def test_other_thread_not_included(self, tmp_path):
+        db = _make_thread_db(tmp_path)
+        tree = build_thread_tree(db, "t1")
+        msgids = [t[2] for t in tree]
+        assert "<other>" not in msgids
+
+    def test_empty_thread_id_returns_empty(self, tmp_path):
+        db = _make_thread_db(tmp_path)
+        assert build_thread_tree(db, "nonexistent") == []
+
+
+class TestFormatThreadTree:
+    def test_returns_list_of_strings(self):
+        tree = [(0, "/a.md", "<a>", "Root"), (1, "/b.md", "<b>", "Reply")]
+        lines = format_thread_tree(tree)
+        assert isinstance(lines, list)
+        assert all(isinstance(l, str) for l in lines)
+
+    def test_empty_tree_returns_message(self):
+        lines = format_thread_tree([])
+        assert any("없음" in l or len(l) > 0 for l in lines)
+
+    def test_contains_subject(self):
+        tree = [(0, "/a.md", "<a>", "Important subject")]
+        lines = format_thread_tree(tree)
+        assert any("Important subject" in l for l in lines)

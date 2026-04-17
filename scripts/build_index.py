@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS messages (
     source_pst     TEXT,
     path           TEXT NOT NULL,
     n_attachments  INTEGER DEFAULT 0,
+    tags           TEXT DEFAULT '',
+    in_reply_to    TEXT DEFAULT '',
     indexed_at     TEXT DEFAULT (datetime('now'))
 );
 
@@ -114,10 +116,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
         conn: 활성 SQLite 연결.
     """
     conn.executescript(SCHEMA_SQL)
-    # 마이그레이션: n_attachments 컬럼 추가 (기존 DB 호환)
+    # 마이그레이션: 누락된 컬럼 추가 (기존 DB 호환)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
     if "n_attachments" not in cols:
         conn.execute("ALTER TABLE messages ADD COLUMN n_attachments INTEGER DEFAULT 0")
+    if "tags" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN tags TEXT DEFAULT ''")
+    if "in_reply_to" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN in_reply_to TEXT DEFAULT ''")
     conn.commit()
 
 
@@ -167,8 +173,9 @@ def insert_row(conn: sqlite3.Connection, row: dict) -> None:
             """
             INSERT OR IGNORE INTO messages
                 (msgid, date, from_name, from_addr, to_addrs, cc_addrs,
-                 subject, folder, thread, source_pst, path, n_attachments)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 subject, folder, thread, source_pst, path, n_attachments,
+                 in_reply_to)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row.get("msgid", ""),
@@ -183,6 +190,7 @@ def insert_row(conn: sqlite3.Connection, row: dict) -> None:
                 row.get("source_pst", ""),
                 row.get("path", ""),
                 int(row.get("n_attachments", 0)),
+                row.get("in_reply_to", ""),
             ),
         )
         # rowcount > 0 이면 실제로 새 행이 삽입된 경우 → FTS5 도 삽입
@@ -328,8 +336,8 @@ def extract_frontmatter(md_path: Path) -> dict | None:
                 continue
             key, _, val = line.partition(":")
             key = key.strip()
-            val = val.strip().strip('"')
-            # JSON 배열 필드 처리
+            val = val.strip().strip('"').strip("'")
+            # JSON 배열 필드 처리 (inline [a, b] 형식도 지원)
             if key in ("to", "cc", "references", "tags"):
                 try:
                     meta[key] = json.loads(val)

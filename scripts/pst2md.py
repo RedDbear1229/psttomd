@@ -45,6 +45,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import textwrap
+
 import html2text
 from tqdm import tqdm
 
@@ -106,7 +108,7 @@ def _make_html2text() -> html2text.HTML2Text:
     h = html2text.HTML2Text()
     h.ignore_images = False
     h.ignore_links = False
-    h.body_width = 0
+    h.body_width = 80   # 0이면 단락 전체가 한 줄 — 80자 줄바꿈으로 가독성 확보
     h.protect_links = True
     h.wrap_links = False
     return h
@@ -114,10 +116,32 @@ def _make_html2text() -> html2text.HTML2Text:
 
 _h2t = _make_html2text()
 
+# HTTP(S) src 를 가진 원격 이미지 태그 패턴 (CID 제외)
+_REMOTE_IMG_RE = re.compile(
+    r'<img\b[^>]*\bsrc=["\']https?://[^"\']*["\'][^>]*/?>',
+    re.IGNORECASE,
+)
+
+
+def _strip_remote_images(html: str) -> str:
+    """HTML 에서 원격 HTTP(S) 이미지 태그를 제거한다.
+
+    CID 인라인 이미지는 보존하고, 트래킹 픽셀·불릿 이미지 등
+    외부 URL 참조 이미지만 제거한다.
+
+    Args:
+        html: 원본 HTML 문자열.
+
+    Returns:
+        원격 img 태그가 제거된 HTML 문자열.
+    """
+    return _REMOTE_IMG_RE.sub("", html)
+
 
 def html_to_md(html: str) -> str:
     """HTML 문자열을 Markdown 으로 변환한다.
 
+    변환 전 원격 이미지 태그를 제거해 트래킹 픽셀·불릿 이미지 URL 노이즈를 방지한다.
     변환 실패 시 HTML 태그를 단순 제거한 텍스트를 반환한다.
 
     Args:
@@ -127,10 +151,67 @@ def html_to_md(html: str) -> str:
         Markdown 문자열.
     """
     try:
-        return _h2t.handle(html).strip()
+        return _h2t.handle(_strip_remote_images(html)).strip()
     except Exception as e:
         log.warning("HTML 변환 실패: %s", e)
         return re.sub(r"<[^>]+>", "", html).strip()
+
+
+# 원격 이미지 URL 노이즈 패턴 — 줄 전체·인라인 모두 제거
+# 대상: <http://...gif> (autolink), ![alt](http://...gif) (Markdown 이미지)
+_REMOTE_IMG_AUTOLINK_RE = re.compile(
+    r"<https?://[^\s>]*\.(?:gif|png|jpg|jpeg|bmp|ico|webp|svg)(?:[?#][^\s>]*)?\s*>",
+    re.IGNORECASE,
+)
+_REMOTE_IMG_MD_RE = re.compile(
+    r"!\[[^\]]*\]\(https?://[^\)]+\.(?:gif|png|jpg|jpeg|bmp|ico|webp|svg)[^\)]*\)",
+    re.IGNORECASE,
+)
+_EXCESS_BLANK_RE = re.compile(r"\n{3,}")
+
+
+def _clean_md_body(text: str, wrap_width: int = 80) -> str:
+    """Markdown 본문에서 원격 이미지 링크 노이즈를 제거하고 가독성을 개선한다.
+
+    plain text·HTML 변환 결과에 공통 적용:
+    - <http://...gif> 형식 이미지 autolink 인라인 제거
+    - ![alt](http://...gif) 형식 Markdown 이미지 링크 제거
+    - wrap_width 초과 산문 줄 → 자동 줄바꿈
+      (인용·들여쓰기·표·헤더·탭 포함 줄은 건너뜀)
+    - 빈 줄 3개 이상 → 2개로 축약
+
+    Args:
+        text:       Markdown 본문 문자열.
+        wrap_width: 자동 줄바꿈 기준 너비 (기본 80자).
+
+    Returns:
+        정리된 Markdown 문자열.
+    """
+    text = _REMOTE_IMG_AUTOLINK_RE.sub("", text)
+    text = _REMOTE_IMG_MD_RE.sub("", text)
+
+    # 긴 산문 줄 자동 줄바꿈
+    wrapped_lines: list[str] = []
+    for line in text.split("\n"):
+        if (
+            len(line) > wrap_width
+            and not line.startswith((">", "    ", "|", "#", "\t"))
+            and "\t" not in line
+        ):
+            wrapped_lines.append(
+                textwrap.fill(
+                    line.rstrip(),
+                    width=wrap_width,
+                    break_long_words=False,
+                    break_on_hyphens=False,
+                )
+            )
+        else:
+            wrapped_lines.append(line)
+    text = "\n".join(wrapped_lines)
+
+    text = _EXCESS_BLANK_RE.sub("\n\n", text)
+    return text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +357,7 @@ def extract_body(
 
     if html_body:
         text = safe_decode(html_body) if isinstance(html_body, bytes) else html_body
-        return html_to_md(text)
+        return _clean_md_body(html_to_md(text))
 
     if msg.plain_text_body:
         text = (
@@ -284,12 +365,12 @@ def extract_body(
             if isinstance(msg.plain_text_body, bytes)
             else msg.plain_text_body
         )
-        return text.strip()
+        return _clean_md_body(text)
 
     if msg.rtf_body:
         raw = safe_decode(msg.rtf_body) if isinstance(msg.rtf_body, bytes) else msg.rtf_body
         plain_rtf = re.sub(r"\\[a-z]+\d* ?|[{}]", "", raw)
-        return plain_rtf.strip()
+        return _clean_md_body(plain_rtf)
 
     return ""
 

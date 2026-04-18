@@ -70,6 +70,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "archive": {
         # 아카이브 루트 디렉터리 (~ 확장 지원)
         "root": str(Path.home() / "mail-archive"),
+        # 추가 아카이브 루트 목록 (다중 아카이브 지원)
+        # 예: roots = ["~/mail-archive", "~/work-archive"]
+        "roots": [],
     },
     # PST 파서 백엔드
     # auto     — 플랫폼에 따라 자동 선택
@@ -87,6 +90,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "win32com": {
         # 빈 문자열 = Outlook 기본 프로파일 사용
         "outlook_profile": "",
+    },
+    "mailview": {
+        # fzf 미리보기에서 glow 가 사용할 스타일.
+        # 기본 dark. 변경 시: dark | light | dracula | tokyo-night | notty
+        # 또는 커스텀 JSON 절대 경로: "/절대/경로/my-theme.json"
+        "glow_style": "dark",
+        # True 이면 mailview 시작 시 새 MD 파일이 있을 때 인덱스를 자동 갱신한다.
+        "auto_index": True,
     },
 }
 
@@ -186,6 +197,34 @@ def db_path(cfg: dict[str, Any] | None = None) -> Path:
     return archive_root(cfg) / "index.sqlite"
 
 
+def archive_roots(cfg: dict[str, Any] | None = None) -> list[Path]:
+    """모든 아카이브 루트 디렉터리 목록을 반환한다.
+
+    archive.root (단일 기본값) 와 archive.roots (추가 목록) 를 합산한다.
+    중복 경로는 제거한다.
+
+    Args:
+        cfg: load_config() 결과. None 이면 내부에서 새로 로드한다.
+
+    Returns:
+        중복 없는 아카이브 루트 Path 목록. 항상 1개 이상.
+    """
+    if cfg is None:
+        cfg = load_config()
+    primary = archive_root(cfg)
+    extras = [
+        Path(r).expanduser()
+        for r in cfg.get("archive", {}).get("roots", [])
+    ]
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for p in [primary] + extras:
+        if p not in seen:
+            seen.add(p)
+            result.append(p)
+    return result
+
+
 def save_archive_root(path: str | Path) -> Path:
     """config.toml 의 archive.root 값을 업데이트한다.
 
@@ -283,6 +322,13 @@ def init_config_file(
         f'bat     = "bat"\n'
         f'sqlite3 = "sqlite3"\n'
         f'rg      = "rg"\n'
+        f"\n"
+        f"[mailview]\n"
+        f"# fzf 미리보기 glow 테마: dark | light | dracula | tokyo-night | notty\n"
+        f"# 또는 커스텀 JSON 절대 경로. 비워두면 mocha-glow.json 자동 사용.\n"
+        f'glow_style = ""\n'
+        f"# mailview 시작 시 새 MD 파일이 있으면 인덱스를 자동 갱신한다.\n"
+        f"auto_index = true\n"
     )
 
     if plat == "windows":

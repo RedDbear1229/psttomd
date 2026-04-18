@@ -20,6 +20,10 @@ root = "~/mail-archive"
 # Windows 예시 (역슬래시 대신 슬래시 사용):
 # root = "C:/Users/YourName/mail-archive"
 
+# 다중 아카이브 지원: archive.roots 에 추가 경로를 나열합니다.
+# mailgrep --all-archives 로 모든 아카이브를 한 번에 검색합니다.
+# roots = ["~/work-archive", "~/personal-archive"]
+
 # ── PST 파서 백엔드 ────────────────────────────────────────────────────────
 # auto     — 플랫폼에 따라 자동 선택 (linux/wsl → pypff, windows → win32com)
 # pypff    — libpff-python 직접 파싱 (Linux/WSL, 속도 최고)
@@ -49,3 +53,31 @@ rg      = "rg"       # ripgrep (mailgrep 내부 검색에 사용)
 # 빈 문자열("")이면 Outlook 기본 프로파일을 사용합니다.
 # 여러 프로파일이 있을 때 특정 프로파일을 지정하려면 이름을 입력하세요.
 outlook_profile = ""
+
+# ── mailview 뷰어 설정 ────────────────────────────────────────────────────
+[mailview]
+
+# fzf 미리보기 창에서 glow 가 사용할 Markdown 색상 테마.
+#
+# 빈 문자열("")이면 scripts/lib/mocha-glow.json 을 자동으로 사용하고,
+# 파일이 없으면 내장 dark 테마로 폴백합니다.
+#
+# 내장 테마 목록:
+#   dark         — 어두운 배경 (기본)
+#   light        — 밝은 배경
+#   dracula      — Dracula 팔레트
+#   tokyo-night  — Tokyo Night 팔레트
+#   notty        — 색상 없음 (터미널 기본색)
+#
+# 커스텀 테마: JSON 파일의 절대 경로를 지정합니다.
+#   glow_style = "/home/user/.config/glow/my-theme.json"
+#
+# 예시:
+# glow_style = "dark"
+# glow_style = "dracula"
+# glow_style = "/home/user/.config/glow/catppuccin-mocha.json"
+glow_style = ""
+
+# mailview 시작 시 새 MD 파일이 있으면 인덱스를 자동으로 증분 갱신합니다.
+# 비활성화하려면 false 로 설정하세요.
+auto_index = true

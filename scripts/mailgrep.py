@@ -24,7 +24,7 @@ from pathlib import Path
 import click
 
 sys.path.insert(0, str(Path(__file__).parent))
-from lib.config import load_config, db_path
+from lib.config import load_config, db_path, archive_roots
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +56,104 @@ def _escape_fts5(query: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 스마트 쿼리 파서 (Feature 14)
+# ---------------------------------------------------------------------------
+
+def _expand_month(value: str) -> str:
+    """'YYYY-MM' 형식 연월을 'YYYY-MM-01' 로 확장한다.
+
+    'YYYY-MM-DD' 는 그대로 반환한다. 형식이 다르면 빈 문자열을 반환한다.
+
+    Args:
+        value: 날짜 문자열 ('YYYY-MM' 또는 'YYYY-MM-DD').
+
+    Returns:
+        'YYYY-MM-DD' 형식 날짜 문자열 또는 빈 문자열.
+    """
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return value
+    if re.fullmatch(r"\d{4}-\d{2}", value):
+        return f"{value}-01"
+    return ""
+
+
+_SMART_PREFIX_RE = re.compile(
+    r"""(?x)
+    (from|to|after|before|folder|subject|has)  # 지원하는 prefix
+    :
+    (\S+)                                       # 값 (공백 없이)
+    """,
+    re.IGNORECASE,
+)
+
+
+def parse_smart_query(raw: str) -> dict:
+    """'key:value' 형식의 인라인 필터를 파싱해 검색 인수 dict 를 반환한다.
+
+    지원 prefix:
+      from:발신자     → from_filter
+      to:수신자       → to_filter
+      after:날짜      → after (YYYY-MM or YYYY-MM-DD)
+      before:날짜     → before (YYYY-MM or YYYY-MM-DD)
+      folder:폴더     → folder
+      subject:키워드  → subject_query (FTS5 subject: 컬럼 한정)
+      has:attachment  → has_attachment = True
+
+    나머지 단어는 'query' 키에 공백으로 합친다.
+
+    Args:
+        raw: 사용자가 입력한 전체 검색 문자열.
+
+    Returns:
+        {
+          "query":        str   — 나머지 FTS5 키워드,
+          "from_filter":  str,
+          "to_filter":    str,
+          "after":        str,
+          "before":       str,
+          "folder":       str,
+          "subject_query": str,
+          "has_attachment": bool,
+        }
+    """
+    result: dict = {
+        "query":          "",
+        "from_filter":    "",
+        "to_filter":      "",
+        "after":          "",
+        "before":         "",
+        "folder":         "",
+        "subject_query":  "",
+        "has_attachment": False,
+    }
+    remaining: list[str] = []
+
+    for token in raw.split():
+        m = _SMART_PREFIX_RE.fullmatch(token)
+        if m:
+            key, value = m.group(1).lower(), m.group(2)
+            if key == "from":
+                result["from_filter"] = value
+            elif key == "to":
+                result["to_filter"] = value
+            elif key == "after":
+                result["after"] = _expand_month(value)
+            elif key == "before":
+                result["before"] = _expand_month(value)
+            elif key == "folder":
+                result["folder"] = value
+            elif key == "subject":
+                result["subject_query"] = value
+            elif key == "has" and value.lower() == "attachment":
+                result["has_attachment"] = True
+        else:
+            remaining.append(token)
+
+    result["query"] = " ".join(remaining)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # SQL 쿼리 빌더
 # ---------------------------------------------------------------------------
 
@@ -72,6 +170,8 @@ def build_query(
     output_json: bool,
     paths_only: bool,
     body_filter: str = "",
+    subject_query: str = "",
+    has_attachment: bool = False,
 ) -> tuple[str, list]:
     """검색 조건에 맞는 SQL 쿼리와 바인딩 파라미터를 생성한다.
 
@@ -95,7 +195,9 @@ def build_query(
         limit:       최대 결과 수.
         output_json: True 이면 JSON 객체를 SELECT.
         paths_only:  True 이면 파일 경로만 SELECT.
-        body_filter: 본문 전용 검색어. ``body:term`` 형식으로 FTS5 에 추가.
+        body_filter:    본문 전용 검색어. ``body:term`` 형식으로 FTS5 에 추가.
+        subject_query:  제목 전용 검색어. ``subject:term`` 형식으로 FTS5 에 추가.
+        has_attachment: True 이면 n_attachments > 0 조건을 추가.
 
     Returns:
         (sql_string, params_list) 튜플.
@@ -104,13 +206,16 @@ def build_query(
     params: list = []
 
     # FTS5 MATCH 절 구성
-    # query  → 전체 컬럼 검색 (term)
-    # body_filter → 본문 컬럼 한정 검색 (body:term)
+    # query        → 전체 컬럼 검색 (term)
+    # body_filter  → 본문 컬럼 한정 검색 (body:term)
+    # subject_query→ 제목 컬럼 한정 검색 (subject:term)
     fts_parts: list[str] = []
     if query:
         fts_parts.append(_escape_fts5(query))
     if body_filter:
         fts_parts.append(f"body:{_escape_fts5(body_filter)}")
+    if subject_query:
+        fts_parts.append(f"subject:{_escape_fts5(subject_query)}")
 
     use_fts = bool(fts_parts)
     if use_fts:
@@ -138,6 +243,8 @@ def build_query(
     if thread:
         conditions.append("m.thread = ?")
         params.append(thread)
+    if has_attachment:
+        conditions.append("COALESCE(m.n_attachments, 0) > 0")
 
     from_clause = "FROM messages m" + (", messages_fts fts" if use_fts else "")
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
@@ -184,14 +291,21 @@ def build_query(
 @click.option("--json",      "output_json", is_flag=True, help="JSON Lines 출력")
 @click.option("--paths-only", is_flag=True, help="파일 경로만 출력 (fzf 파이프용)")
 @click.option("--archive",   default="", help="아카이브 루트 (기본: config.toml)")
+@click.option("--smart",         is_flag=True,
+              help="스마트 쿼리 파싱 (from:, after:, has:attachment 등 인라인 필터)")
+@click.option("--all-archives",  is_flag=True,
+              help="config.toml 의 모든 아카이브를 검색 (archive.roots 포함)")
 def main(
     query, from_filter, to_filter, after, before, folder, thread,
-    body_filter, limit, output_json, paths_only, archive,
+    body_filter, limit, output_json, paths_only, archive, smart, all_archives,
 ):
     """SQLite FTS5 기반 메일 아카이브 검색.
 
     QUERY 는 제목·발신자·본문 전체를 검색한다.
     본문만 검색하려면 --body 를 사용한다.
+
+    --smart 플래그를 사용하면 쿼리 안의 'key:value' 토큰을 필터로 변환한다:
+      from:발신자  after:2023-01  has:attachment  subject:키워드
     """
     cfg = load_config()
     if archive:
@@ -203,27 +317,57 @@ def main(
         click.echo("먼저 실행: python build_index.py", err=True)
         sys.exit(1)
 
+    # ── 스마트 쿼리 파싱 ────────────────────────────────────────────────
+    subject_query = ""
+    has_attachment = False
+    if smart and query:
+        parsed = parse_smart_query(query)
+        query        = parsed["query"]
+        from_filter  = from_filter  or parsed["from_filter"]
+        to_filter    = to_filter    or parsed["to_filter"]
+        after        = after        or parsed["after"]
+        before       = before       or parsed["before"]
+        folder       = folder       or parsed["folder"]
+        subject_query = parsed["subject_query"]
+        has_attachment = parsed["has_attachment"]
+
     # 검색 조건이 전혀 없으면 도움말 안내
-    if not query and not any([from_filter, to_filter, after, before, folder, thread, body_filter]):
+    if (not query and not subject_query and not has_attachment and
+            not any([from_filter, to_filter, after, before, folder, thread, body_filter])):
         click.echo("키워드 또는 필터를 지정하세요. --help 참고", err=True)
         sys.exit(1)
 
-    conn = sqlite3.connect(str(db))
-    conn.row_factory = sqlite3.Row
+    # ── 검색 대상 DB 목록 결정 ──────────────────────────────────────────
+    if all_archives:
+        dbs = [
+            r / "index.sqlite"
+            for r in archive_roots(cfg)
+            if (r / "index.sqlite").exists()
+        ]
+    else:
+        if not db.exists():
+            click.echo(f"오류: 인덱스 없음 → {db}", err=True)
+            click.echo("먼저 실행: python build_index.py", err=True)
+            sys.exit(1)
+        dbs = [db]
 
-    sql, params = build_query(
-        conn, query, from_filter, to_filter, after, before,
-        folder, thread, limit, output_json, paths_only, body_filter,
-    )
+    rows_all: list = []
+    for target_db in dbs:
+        conn = sqlite3.connect(str(target_db))
+        conn.row_factory = sqlite3.Row
+        sql, params = build_query(
+            conn, query, from_filter, to_filter, after, before,
+            folder, thread, limit, output_json, paths_only, body_filter,
+            subject_query, has_attachment,
+        )
+        try:
+            rows_all.extend(conn.execute(sql, params).fetchall())
+        except sqlite3.OperationalError as e:
+            click.echo(f"쿼리 오류 [{target_db}]: {e}", err=True)
+        finally:
+            conn.close()
 
-    try:
-        rows = conn.execute(sql, params).fetchall()
-    except sqlite3.OperationalError as e:
-        click.echo(f"쿼리 오류: {e}", err=True)
-        conn.close()
-        sys.exit(1)
-    finally:
-        conn.close()
+    rows = rows_all[:limit]
 
     if not rows:
         if not paths_only and not output_json:

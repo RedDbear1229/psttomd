@@ -37,19 +37,22 @@ log = logging.getLogger(__name__)
 #: 데이터베이스 스키마 — 최초 실행 시 한 번만 적용
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS messages (
-    id          INTEGER PRIMARY KEY,
-    msgid       TEXT UNIQUE NOT NULL,
-    date        TEXT,
-    from_name   TEXT,
-    from_addr   TEXT,
-    to_addrs    TEXT,   -- JSON 배열
-    cc_addrs    TEXT,   -- JSON 배열
-    subject     TEXT,
-    folder      TEXT,
-    thread      TEXT,
-    source_pst  TEXT,
-    path        TEXT NOT NULL,
-    indexed_at  TEXT DEFAULT (datetime('now'))
+    id             INTEGER PRIMARY KEY,
+    msgid          TEXT UNIQUE NOT NULL,
+    date           TEXT,
+    from_name      TEXT,
+    from_addr      TEXT,
+    to_addrs       TEXT,   -- JSON 배열
+    cc_addrs       TEXT,   -- JSON 배열
+    subject        TEXT,
+    folder         TEXT,
+    thread         TEXT,
+    source_pst     TEXT,
+    path           TEXT NOT NULL,
+    n_attachments  INTEGER DEFAULT 0,
+    tags           TEXT DEFAULT '',
+    in_reply_to    TEXT DEFAULT '',
+    indexed_at     TEXT DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_date      ON messages(date);
@@ -107,10 +110,20 @@ def get_conn(archive_root: Path) -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection) -> None:
     """데이터베이스에 스키마를 적용한다 (CREATE TABLE IF NOT EXISTS).
 
+    기존 DB 에 n_attachments 열이 없으면 마이그레이션으로 추가한다.
+
     Args:
         conn: 활성 SQLite 연결.
     """
     conn.executescript(SCHEMA_SQL)
+    # 마이그레이션: 누락된 컬럼 추가 (기존 DB 호환)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+    if "n_attachments" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN n_attachments INTEGER DEFAULT 0")
+    if "tags" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN tags TEXT DEFAULT ''")
+    if "in_reply_to" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN in_reply_to TEXT DEFAULT ''")
     conn.commit()
 
 
@@ -160,8 +173,9 @@ def insert_row(conn: sqlite3.Connection, row: dict) -> None:
             """
             INSERT OR IGNORE INTO messages
                 (msgid, date, from_name, from_addr, to_addrs, cc_addrs,
-                 subject, folder, thread, source_pst, path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 subject, folder, thread, source_pst, path, n_attachments,
+                 in_reply_to)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row.get("msgid", ""),
@@ -175,6 +189,8 @@ def insert_row(conn: sqlite3.Connection, row: dict) -> None:
                 row.get("thread", ""),
                 row.get("source_pst", ""),
                 row.get("path", ""),
+                int(row.get("n_attachments", 0)),
+                row.get("in_reply_to", ""),
             ),
         )
         # rowcount > 0 이면 실제로 새 행이 삽입된 경우 → FTS5 도 삽입
@@ -320,8 +336,8 @@ def extract_frontmatter(md_path: Path) -> dict | None:
                 continue
             key, _, val = line.partition(":")
             key = key.strip()
-            val = val.strip().strip('"')
-            # JSON 배열 필드 처리
+            val = val.strip().strip('"').strip("'")
+            # JSON 배열 필드 처리 (inline [a, b] 형식도 지원)
             if key in ("to", "cc", "references", "tags"):
                 try:
                     meta[key] = json.loads(val)
@@ -336,6 +352,21 @@ def extract_frontmatter(md_path: Path) -> dict | None:
             meta["from_addr"] = (
                 m.group(1).lower() if m else meta.get("from", "").lower()
             )
+
+        # 첨부 파일 수 계산: "  - name:" 패턴 카운트
+        n_att = 0
+        in_att = False
+        for line in fm_text.splitlines():
+            stripped = line.strip()
+            if stripped == "attachments:":
+                in_att = True
+                continue
+            if in_att:
+                if not line.startswith(" ") and stripped:
+                    break
+                if re.match(r"\s+-\s+name:", line):
+                    n_att += 1
+        meta["n_attachments"] = n_att
 
         return meta
 

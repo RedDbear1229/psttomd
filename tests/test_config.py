@@ -14,6 +14,7 @@ from lib.config import (
     detect_platform,
     load_config,
     archive_root,
+    archive_roots,
     db_path,
     save_archive_root,
     init_config_file,
@@ -244,3 +245,33 @@ class TestInitConfigFile:
         assert "[archive]" in text
         assert "pst_backend" in text
         assert "[tools]" in text
+
+
+# ---------------------------------------------------------------------------
+# archive_roots
+# ---------------------------------------------------------------------------
+
+class TestArchiveRoots:
+    def test_single_archive_returns_list_of_one(self, tmp_path, monkeypatch):
+        cfg = {"archive": {"root": str(tmp_path), "roots": []}}
+        roots = archive_roots(cfg)
+        assert len(roots) == 1
+        assert roots[0] == tmp_path
+
+    def test_multiple_roots_merged(self, tmp_path):
+        extra = tmp_path / "extra"
+        cfg = {"archive": {"root": str(tmp_path), "roots": [str(extra)]}}
+        roots = archive_roots(cfg)
+        assert len(roots) == 2
+        assert extra in roots
+
+    def test_duplicate_roots_deduplicated(self, tmp_path):
+        cfg = {"archive": {"root": str(tmp_path), "roots": [str(tmp_path)]}}
+        roots = archive_roots(cfg)
+        assert len(roots) == 1
+
+    def test_home_tilde_expanded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        cfg = {"archive": {"root": str(tmp_path), "roots": ["~/extra"]}}
+        roots = archive_roots(cfg)
+        assert any(r == tmp_path / "extra" for r in roots)

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-from mailgrep import _escape_fts5, build_query
+from mailgrep import _escape_fts5, build_query, parse_smart_query, _expand_month
 
 
 # ---------------------------------------------------------------------------
@@ -169,3 +169,78 @@ class TestBuildQuery:
             dummy_conn, "", "", "", "", "", "", "", 50, False, False
         )
         assert "WHERE" not in sql
+
+
+# ---------------------------------------------------------------------------
+# _expand_month
+# ---------------------------------------------------------------------------
+
+class TestExpandMonth:
+    def test_full_date_unchanged(self):
+        assert _expand_month("2023-05-15") == "2023-05-15"
+
+    def test_month_expanded(self):
+        assert _expand_month("2023-05") == "2023-05-01"
+
+    def test_invalid_returns_empty(self):
+        assert _expand_month("2023") == ""
+
+    def test_invalid_text_returns_empty(self):
+        assert _expand_month("last-week") == ""
+
+
+# ---------------------------------------------------------------------------
+# parse_smart_query
+# ---------------------------------------------------------------------------
+
+class TestParseSmartQuery:
+    def test_plain_query_unchanged(self):
+        result = parse_smart_query("invoice")
+        assert result["query"] == "invoice"
+        assert result["from_filter"] == ""
+
+    def test_from_prefix(self):
+        result = parse_smart_query("from:홍길동 invoice")
+        assert result["from_filter"] == "홍길동"
+        assert result["query"] == "invoice"
+
+    def test_after_prefix_date(self):
+        result = parse_smart_query("after:2023-05-01")
+        assert result["after"] == "2023-05-01"
+
+    def test_after_prefix_month_expanded(self):
+        result = parse_smart_query("after:2023-05")
+        assert result["after"] == "2023-05-01"
+
+    def test_has_attachment(self):
+        result = parse_smart_query("has:attachment invoice")
+        assert result["has_attachment"] is True
+        assert result["query"] == "invoice"
+
+    def test_subject_prefix(self):
+        result = parse_smart_query("subject:견적서")
+        assert result["subject_query"] == "견적서"
+        assert result["query"] == ""
+
+    def test_folder_prefix(self):
+        result = parse_smart_query("folder:Inbox keyword")
+        assert result["folder"] == "Inbox"
+        assert result["query"] == "keyword"
+
+    def test_multiple_prefixes(self):
+        result = parse_smart_query("from:alice after:2023-01 has:attachment report")
+        assert result["from_filter"] == "alice"
+        assert result["after"] == "2023-01-01"
+        assert result["has_attachment"] is True
+        assert result["query"] == "report"
+
+    def test_unknown_prefix_kept_as_query(self):
+        result = parse_smart_query("size:large invoice")
+        assert "size:large" in result["query"]
+
+    def test_has_attachment_adds_constraint(self, dummy_conn):
+        sql, params = build_query(
+            dummy_conn, "", "", "", "", "", "", "", 50, False, False,
+            has_attachment=True,
+        )
+        assert "n_attachments" in sql

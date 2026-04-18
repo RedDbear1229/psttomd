@@ -130,26 +130,40 @@ def normalize_address(raw: Optional[str]) -> str:
 
 
 def parse_address_list(raw: Optional[str]) -> list[str]:
-    """쉼표 구분 주소 목록을 파싱해 정규화된 이메일 주소 리스트를 반환한다.
+    """쉼표/세미콜론 구분 주소 목록을 파싱한다.
 
-    '<>' 내부의 쉼표는 구분자로 취급하지 않는다 (그룹 주소 대응).
+    Outlook PST 의 PR_DISPLAY_TO 는 세미콜론 구분을 사용하므로 쉼표와 함께 처리한다.
+    '<>' 내부의 구분자는 분리하지 않는다 (그룹 주소 대응).
+    각 항목이 이메일 주소면 소문자 정규화된 주소, 이메일이 없으면 display name
+    원문을 그대로 반환한다 (예: "Lokay  Michelle").
 
     Args:
-        raw: "a@x.com, 홍길동 <b@y.com>" 형태의 원시 문자열.
+        raw: "a@x.com, 홍길동 <b@y.com>; Lokay  Michelle" 형태의 원시 문자열.
 
     Returns:
-        정규화된 이메일 주소 리스트. 빈 주소는 제외된다.
+        이메일 또는 display name 리스트. 공백/중복 빈 항목은 제외된다.
     """
     if not raw:
         return []
     raw = decode_mime_header(raw)
-    # '<>' 내부 쉼표를 보호하면서 분리
-    parts = re.split(r",(?![^<]*>)", raw)
-    result = []
+    # '<>' 내부는 보호하면서 쉼표·세미콜론 모두 구분자로 사용
+    parts = re.split(r"[,;](?![^<]*>)", raw)
+    result: list[str] = []
     for part in parts:
-        addr = normalize_address(part.strip())
+        part = part.strip()
+        if not part:
+            continue
+        addr = normalize_address(part)
         if addr:
             result.append(addr)
+            continue
+        # 이메일이 없으면 display name 원문을 정리해서 사용
+        # parseaddr 로 name 추출 시도
+        name, _ = parseaddr(part)
+        name = (name or part).strip()
+        if name:
+            # 연속된 공백은 1칸으로 축약
+            result.append(re.sub(r"\s+", " ", name))
     return result
 
 

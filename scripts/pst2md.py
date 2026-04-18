@@ -45,6 +45,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import textwrap
+
 import html2text
 from tqdm import tqdm
 
@@ -81,6 +83,23 @@ IMAGE_EXTS: frozenset[str] = frozenset({
     ".svg", ".tiff", ".tif", ".ico", ".heic", ".avif",
 })
 
+#: 제외할 내부용 첨부 파일명 패턴 — 사용자 콘텐츠가 아닌 Outlook 내부 생성물
+#:   ~~DLNK*.URL : HTML 메일 내 하이퍼링크를 Outlook 이 캐시한 .URL 파일
+#:   Mime.822    : 일부 Exchange 에서 원본 MIME 을 별첨으로 보관
+_SKIP_ATTACHMENT_NAME_RE = re.compile(
+    r"^(?:~~DLNK\d*\.URL|Mime\.822|winmail\.dat)$",
+    re.IGNORECASE,
+)
+
+
+def _should_skip_attachment(name: str) -> bool:
+    """첨부 파일명이 Outlook 내부용 캐시/플레이스홀더인지 판별한다.
+
+    사용자가 실제로 첨부한 파일이 아닌 메일 클라이언트 내부 생성 파일을
+    frontmatter·본문 링크에서 제외하기 위한 필터.
+    """
+    return bool(_SKIP_ATTACHMENT_NAME_RE.match(name.strip()))
+
 
 # ---------------------------------------------------------------------------
 # HTML → Markdown 변환기
@@ -106,7 +125,7 @@ def _make_html2text() -> html2text.HTML2Text:
     h = html2text.HTML2Text()
     h.ignore_images = False
     h.ignore_links = False
-    h.body_width = 0
+    h.body_width = 80   # 0이면 단락 전체가 한 줄 — 80자 줄바꿈으로 가독성 확보
     h.protect_links = True
     h.wrap_links = False
     return h
@@ -114,10 +133,43 @@ def _make_html2text() -> html2text.HTML2Text:
 
 _h2t = _make_html2text()
 
+# HTTP(S) src 를 가진 원격 이미지 태그 패턴 (CID 제외)
+_REMOTE_IMG_RE = re.compile(
+    r'<img\b[^>]*\bsrc=["\']https?://[^"\']*["\'][^>]*/?>',
+    re.IGNORECASE,
+)
+
+# 인접 종료·시작 태그 사이 공백 보정 대상
+# - inline: </span><span>, </a><b> 등 공백 없이 붙어있으면 단어가 이어붙음
+# - table 셀: </td><td>, </th><th> 도 html2text 가 공백 없이 이어붙임
+_ADJACENT_INLINE_RE = re.compile(
+    r"(</(?:span|a|font|em|strong|b|i|u|small|big|td|th)>)\s*(<(?:span|a|font|em|strong|b|i|u|small|big|td|th)\b)",
+    re.IGNORECASE,
+)
+
+
+def _preprocess_html(html: str) -> str:
+    """html2text 변환 전에 HTML 을 사전 정리한다.
+
+    - 원격 HTTP(S) <img> 태그 제거 (트래킹 픽셀·불릿 이미지)
+    - 인접 inline 태그(</span><span> 등) 사이 공백 삽입
+      → 변환 후 단어가 붙어버리는 문제 방지 (예: "Houston, Texaswww.kaseco.com")
+
+    Args:
+        html: 원본 HTML 문자열.
+
+    Returns:
+        전처리된 HTML.
+    """
+    html = _REMOTE_IMG_RE.sub("", html)
+    html = _ADJACENT_INLINE_RE.sub(r"\1 \2", html)
+    return html
+
 
 def html_to_md(html: str) -> str:
     """HTML 문자열을 Markdown 으로 변환한다.
 
+    변환 전 원격 이미지 태그를 제거해 트래킹 픽셀·불릿 이미지 URL 노이즈를 방지한다.
     변환 실패 시 HTML 태그를 단순 제거한 텍스트를 반환한다.
 
     Args:
@@ -127,10 +179,147 @@ def html_to_md(html: str) -> str:
         Markdown 문자열.
     """
     try:
-        return _h2t.handle(html).strip()
+        return _h2t.handle(_preprocess_html(html)).strip()
     except Exception as e:
         log.warning("HTML 변환 실패: %s", e)
         return re.sub(r"<[^>]+>", "", html).strip()
+
+
+# 원격 이미지 URL 노이즈 패턴 — 줄 전체·인라인 모두 제거
+# 대상: <http://...gif> (autolink), ![alt](http://...gif) (Markdown 이미지)
+_REMOTE_IMG_AUTOLINK_RE = re.compile(
+    r"<https?://[^\s>]*\.(?:gif|png|jpg|jpeg|bmp|ico|webp|svg)(?:[?#][^\s>]*)?\s*>",
+    re.IGNORECASE,
+)
+_REMOTE_IMG_MD_RE = re.compile(
+    r"!\[[^\]]*\]\(https?://[^\)]+\.(?:gif|png|jpg|jpeg|bmp|ico|webp|svg)[^\)]*\)",
+    re.IGNORECASE,
+)
+_EXCESS_BLANK_RE = re.compile(r"\n{3,}")
+
+# EDRM 저작권 푸터 — Enron 공개 데이터셋에 모든 메일 말미에 붙어있음
+# 별 라인 + 3~5줄 안내 + 별 라인 형식
+_EDRM_FOOTER_RE = re.compile(
+    r"\n?\*{3,}\s*\n"
+    r"EDRM Enron Email Data Set.*?\n"
+    r"\*{3,}\s*\n?",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# 본문에 섞이는 html2text 산출물 부산물
+_IMAGE_PLACEHOLDER_RE = re.compile(r"^\s*\[IMAGE\]\s*$", re.MULTILINE)
+
+# 공백·탭만 있는 줄 → 진짜 빈 줄로 정규화 (그래야 _EXCESS_BLANK_RE 가 잘 잡음)
+_WHITESPACE_ONLY_LINE_RE = re.compile(r"^[ \t]+$", re.MULTILINE)
+
+# 중점(·, U+00B7) 으로 시작하는 불릿 → Markdown 리스트 마커로 변환
+_MIDDOT_BULLET_RE = re.compile(r"^(\s*)·\s+", re.MULTILINE)
+
+
+def _strip_edrm_footer(text: str) -> str:
+    """EDRM 공개 데이터셋 저작권 블록을 본문에서 제거한다.
+
+    Enron Email Dataset 의 모든 메일 말미에 붙는 불필요한 저작권 안내를 제거한다.
+    일반 메일에는 해당 패턴이 나타나지 않으므로 부작용 없음.
+    """
+    return _EDRM_FOOTER_RE.sub("\n", text)
+
+
+def _join_wrapped_quoted_urls(text: str) -> str:
+    """인용 블록 안에서 URL 이 줄바꿈으로 잘린 경우 이어붙인다.
+
+    Expedia/ftenergy 뉴스레터에서 '>http://foo/\\n>bar.asp' 형태로 URL 이
+    70자에서 잘려있어 Markdown 렌더링 시 링크가 깨진다. 다음 인용 줄이
+    영숫자/punctuation 으로 바로 시작하면 공백 없이 이어붙인다.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        cur = lines[i]
+        # '>http'(s): 프로토콜로 시작하고 다음 줄도 '>' 인용이며 URL 문자로 시작
+        m = re.match(r"^(>+\s*)(https?://\S+)$", cur)
+        if m and i + 1 < len(lines):
+            nxt = lines[i + 1]
+            # 다음 줄이 '>' 로 시작하며 공백 없이 URL 이어짐
+            m2 = re.match(r"^(>+)\s*([A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%\-]+)$", nxt)
+            if m2 and m.group(1).count(">") == m2.group(1).count(">"):
+                # 줄 합치기 후 다음 이어지는 접힘 줄도 재귀적으로 흡수
+                merged = cur + m2.group(2)
+                lines[i] = merged
+                del lines[i + 1]
+                continue  # i 증가시키지 않고 같은 줄 재검사
+        out.append(cur)
+        i += 1
+    return "\n".join(out)
+
+
+def _clean_md_body(text: str, wrap_width: int = 80) -> str:
+    """Markdown 본문 품질을 개선한다 — 노이즈 제거 + 줄바꿈 정리.
+
+    plain text / HTML / RTF 변환 결과에 공통 적용되는 후처리:
+
+    노이즈 제거:
+    - <http://...gif> autolink / ![alt](http://...gif) 원격 이미지 링크
+    - [IMAGE] 플레이스홀더
+    - EDRM 저작권 블록 (Enron 공개 데이터셋)
+
+    포맷 정규화:
+    - 중점(·) 불릿 → Markdown '-' 리스트
+    - 인용 안에서 잘린 URL 이어붙이기 (>http://...\\n>bar.html)
+    - 공백만 있는 줄 → 진짜 빈 줄
+    - 빈 줄 3개 이상 → 2개로 축약
+
+    줄바꿈:
+    - wrap_width 초과 산문 줄 자동 줄바꿈
+      (인용·들여쓰기·표·헤더·탭 포함·URL 포함 줄은 건너뜀)
+
+    Args:
+        text:       Markdown 본문 문자열.
+        wrap_width: 자동 줄바꿈 기준 너비 (기본 80자).
+
+    Returns:
+        정리된 Markdown 문자열.
+    """
+    # 0) 줄바꿈 정규화 — CRLF/CR → LF (이후 regex 들이 \r 에 걸리지 않도록)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # 1) 노이즈 제거
+    text = _REMOTE_IMG_AUTOLINK_RE.sub("", text)
+    text = _REMOTE_IMG_MD_RE.sub("", text)
+    text = _IMAGE_PLACEHOLDER_RE.sub("", text)
+    text = _strip_edrm_footer(text)
+
+    # 2) 포맷 정규화
+    text = _MIDDOT_BULLET_RE.sub(r"\1- ", text)
+    text = _join_wrapped_quoted_urls(text)
+    text = _WHITESPACE_ONLY_LINE_RE.sub("", text)
+
+    # 3) 긴 산문 줄 자동 줄바꿈
+    wrapped_lines: list[str] = []
+    for line in text.split("\n"):
+        # 줄바꿈 건너뛰기: 인용·들여쓰기·표·헤더·탭 포함·이미 짧은 줄·URL 단독 줄
+        if (
+            len(line) <= wrap_width
+            or line.startswith((">", "    ", "|", "#", "\t"))
+            or "\t" in line
+            or line.lstrip().startswith(("http://", "https://", "- [", "* [", "- !", "* !"))
+        ):
+            wrapped_lines.append(line)
+            continue
+        wrapped_lines.append(
+            textwrap.fill(
+                line.rstrip(),
+                width=wrap_width,
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
+        )
+    text = "\n".join(wrapped_lines)
+
+    # 4) 최종 빈 줄 축약
+    text = _EXCESS_BLANK_RE.sub("\n\n", text)
+    return text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +465,7 @@ def extract_body(
 
     if html_body:
         text = safe_decode(html_body) if isinstance(html_body, bytes) else html_body
-        return html_to_md(text)
+        return _clean_md_body(html_to_md(text))
 
     if msg.plain_text_body:
         text = (
@@ -284,12 +473,12 @@ def extract_body(
             if isinstance(msg.plain_text_body, bytes)
             else msg.plain_text_body
         )
-        return text.strip()
+        return _clean_md_body(text)
 
     if msg.rtf_body:
         raw = safe_decode(msg.rtf_body) if isinstance(msg.rtf_body, bytes) else msg.rtf_body
         plain_rtf = re.sub(r"\\[a-z]+\d* ?|[{}]", "", raw)
-        return plain_rtf.strip()
+        return _clean_md_body(plain_rtf)
 
     return ""
 
@@ -379,6 +568,9 @@ def message_to_md(
             try:
                 att_name, att_data = backend.get_attachment_data(msg, i)
                 att_name = decode_mime_header(att_name) or f"attachment_{i}"
+                # Outlook 내부 캐시 첨부 (~~DLNK*.URL 등) 는 제외
+                if _should_skip_attachment(att_name):
+                    continue
                 if att_data and not dry_run:
                     meta = store_attachment(att_data, att_name, out_root / "attachments")
                     attachment_metas.append(meta)
@@ -456,7 +648,32 @@ def message_to_md(
             f'---'
         )
 
-        content = f"{frontmatter}\n\n# {subject}\n\n{body}\n\n---\n\n관련: {related_line}\n"
+        # ── 메일 헤더 블록 (본문 상단에 표시) ────────────────────────────
+        if from_addr and from_addr != from_raw:
+            from_display = f"{from_raw} <{from_addr}>"
+        else:
+            from_display = from_raw or from_addr or "(발신자 없음)"
+
+        to_display = ", ".join(to_list) if to_list else "(수신자 없음)"
+        date_display = date_to_iso(dt) or "(날짜 없음)"
+
+        header_block = (
+            f"**보낸사람:** {from_display}  \n"
+            f"**받는사람:** {to_display}  \n"
+        )
+        if cc_list:
+            header_block += f"**참조:** {', '.join(cc_list)}  \n"
+        header_block += f"**날짜:** {date_display}"
+
+        content = (
+            f"{frontmatter}\n\n"
+            f"# {subject}\n\n"
+            f"{header_block}\n\n"
+            f"---\n\n"
+            f"{body}\n\n"
+            f"---\n\n"
+            f"관련: {related_line}\n"
+        )
 
         meta = {
             "msgid":         msgid,

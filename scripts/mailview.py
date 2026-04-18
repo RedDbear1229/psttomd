@@ -28,19 +28,21 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import unicodedata
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
 import click
 
 sys.path.insert(0, str(Path(__file__).parent))
-from lib.config import load_config, db_path, archive_root, detect_platform
+from lib.config import load_config, db_path, archive_root, archive_roots, detect_platform
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +119,7 @@ _FZF_COL_HEADER: str = (
     + "  "                     # 2 cols gap
     + "보낸사람" + " " * 2     # 8 + 2 = 10 visual cols (sender 열)
     + "  "                     # 2 cols gap
+    + "   "                    # 3 cols: 첨부 표시 공간 (📎 = 2 + space 1)
     + "제목"
 )
 
@@ -125,17 +128,33 @@ _FZF_COL_HEADER: str = (
 _HELP_LINES: list[str] = [
     "",
     "   키 바인딩 — mailview",
-    "   " + "─" * 36,
+    "   " + "─" * 44,
     "   Enter      메일 열람 (glow 렌더링)",
     "   Ctrl-P     원문 표시 (bat / less)",
     "   Ctrl-O     $EDITOR 로 열기",
     "   Ctrl-A     첨부 파일 목록 열기",
-    "   Ctrl-B     본문 검색 모드로 전환",
-    "   Ctrl-R     전체 목록 초기화 (최근 100통)",
+    "   Ctrl-U     URL 추출 및 열기 (브라우저)",
+    "   Ctrl-K     태그 수정 (쉼표 구분)",
+    "   Ctrl-D     메일 삭제 (확인 후 삭제)",
+    "   Ctrl-X     선택 메일 일괄 삭제 (Tab 으로 복수 선택)",
+    "   Ctrl-B     본문 검색 모드 (미리보기에 매칭 라인 강조)",
+    "   Ctrl-F     폴더 브라우저 (fzf 0.47+ 필요)",
+    "   Ctrl-T     같은 스레드 전체 보기 (fzf 0.47+ 필요)",
+    "   Ctrl-R     전체 목록 초기화 (최근 100통, 날짜순)",
+    "   Alt-I      아카이브 통계 요약",
+    "   Alt-T      태그 브라우저 (fzf 0.47+ 필요)",
+    "   Alt-S      제목순 정렬",
+    "   Alt-F      발신자순 정렬",
+    "   Alt-1      오늘 수신 메일",
+    "   Alt-2      최근 7일 메일",
+    "   Alt-3      최근 30일 메일",
+    "   Alt-4      최근 1년 메일",
+    "   Tab        멀티 선택 토글",
     "   ?          이 도움말 (ESC 로 닫기)",
     "   ESC        종료",
-    "   " + "─" * 36,
-    "   검색창에 텍스트 입력 후 Ctrl-B → 본문 키워드 검색",
+    "   " + "─" * 44,
+    "   📎  첨부 파일 있는 메일",
+    "   Ctrl-B 후 검색어 입력 → 미리보기에서 매칭 라인 하이라이트",
     "",
 ]
 
@@ -166,11 +185,116 @@ def _require_tool(name: str, cfg: dict, install_hint: str = "") -> str:
 # 경로 목록 수집
 # ---------------------------------------------------------------------------
 
-def get_recent_paths(db: Path, limit: int = 100) -> list[str]:
-    """DB 에서 최근 발송일 기준 Markdown 파일 경로 목록을 반환한다."""
+_SORT_ORDER: dict[str, str] = {
+    "date":    "date DESC",
+    "from":    "LOWER(COALESCE(NULLIF(from_name,''), from_addr, '')) ASC",
+    "subject": "LOWER(COALESCE(subject, '')) ASC",
+}
+
+
+def get_recent_paths(
+    db: Path,
+    limit: int = 100,
+    after: str = "",
+    sort: str = "date",
+) -> list[str]:
+    """DB 에서 Markdown 파일 경로 목록을 반환한다.
+
+    Args:
+        db:    인덱스 SQLite 경로.
+        limit: 최대 반환 수 (기본 100).
+        after: ISO 날짜 문자열 (YYYY-MM-DD). 지정 시 해당 날짜 이후 메일만 반환.
+        sort:  정렬 기준. "date" | "from" | "subject" (기본 "date").
+
+    Returns:
+        정렬 순서대로 파일 경로 목록.
+    """
+    order_clause = _SORT_ORDER.get(sort, _SORT_ORDER["date"])
+    conn = sqlite3.connect(str(db))
+    if after:
+        rows = conn.execute(
+            f"SELECT path FROM messages WHERE date >= ? ORDER BY {order_clause} LIMIT ?",
+            (after, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT path FROM messages ORDER BY {order_clause} LIMIT ?", (limit,)
+        ).fetchall()
+    conn.close()
+    return [r[0] for r in rows if r[0]]
+
+
+def get_folder_list(db: Path) -> list[str]:
+    """DB 에서 사용 중인 폴더 이름 목록을 반환한다.
+
+    Args:
+        db: 인덱스 SQLite 경로.
+
+    Returns:
+        알파벳/가나다순으로 정렬된 폴더 이름 목록.
+    """
     conn = sqlite3.connect(str(db))
     rows = conn.execute(
-        "SELECT path FROM messages ORDER BY date DESC LIMIT ?", (limit,)
+        "SELECT DISTINCT folder FROM messages WHERE folder != '' ORDER BY folder"
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows if r[0]]
+
+
+def get_recent_paths_multi(
+    cfg: dict,
+    limit: int = 100,
+    after: str = "",
+    sort: str = "date",
+) -> list[str]:
+    """모든 아카이브(archive.root + archive.roots)에서 경로를 합산해 반환한다.
+
+    각 아카이브에서 limit 개씩 가져온 뒤, 날짜 내림차순으로 병합해 limit 개를 반환한다.
+    단일 아카이브이면 get_recent_paths() 와 동일하게 동작한다.
+
+    Args:
+        cfg:   load_config() 결과.
+        limit: 최대 반환 수.
+        after: ISO 날짜 필터.
+        sort:  정렬 기준.
+
+    Returns:
+        병합된 파일 경로 목록.
+    """
+    roots = archive_roots(cfg)
+    if len(roots) == 1:
+        return get_recent_paths(db_path(cfg), limit=limit, after=after, sort=sort)
+
+    all_paths: list[str] = []
+    for root in roots:
+        root_db = root / "index.sqlite"
+        if root_db.exists():
+            paths = get_recent_paths(root_db, limit=limit, after=after, sort=sort)
+            all_paths.extend(paths)
+
+    # date DESC 기준 재정렬 (sort 가 date 일 때)
+    if sort == "date":
+        # 경로만 있으므로 DB 에서 날짜를 가져오기보다 삽입 순서 유지
+        # 각 아카이브가 이미 date DESC 정렬이므로 병합 후 앞 limit 개만 반환
+        pass
+
+    return all_paths[:limit]
+
+
+def get_paths_by_tag(db: Path, tag: str) -> list[str]:
+    """DB 에서 특정 태그를 가진 메일 경로 목록을 반환한다.
+
+    Args:
+        db:  인덱스 SQLite 경로.
+        tag: 찾을 태그 이름 (부분 일치).
+
+    Returns:
+        날짜 내림차순으로 정렬된 파일 경로 목록.
+    """
+    conn = sqlite3.connect(str(db))
+    rows = conn.execute(
+        "SELECT path FROM messages WHERE tags LIKE ? ORDER BY date DESC LIMIT 500",
+        (f"%{tag}%",),
     ).fetchall()
     conn.close()
     return [r[0] for r in rows if r[0]]
@@ -191,10 +315,10 @@ def get_paths_from_query(args: list[str]) -> list[str]:
 def get_label(path: str, db: Path) -> str:
     """DB 에서 파일 경로에 해당하는 ANSI 컬러 '날짜  발신자  제목' 레이블을 반환한다.
 
-    Catppuccin Mocha 팔레트:
-      날짜    — Lavender  #b4befe  (180,190,254)
-      발신자  — Green     #a6e3a1  (166,227,161)
-      제목    — Text      (기본색)
+    표준 ANSI 16색 (dark 터미널 호환):
+      날짜    — 청록 (ANSI 36 cyan)
+      발신자  — 초록 (ANSI 32 green)
+      제목    — 기본색
 
     발신자는 from_name 우선 (없으면 from_addr), 10 visual cols 으로 잘라 패딩.
     """
@@ -204,24 +328,29 @@ def get_label(path: str, db: Path) -> str:
             """SELECT substr(date,1,10),
                       from_name,
                       from_addr,
-                      subject
+                      subject,
+                      COALESCE(n_attachments, 0)
                FROM messages WHERE path = ? LIMIT 1""",
             (path,),
         ).fetchone()
         conn.close()
         if row:
-            date       = (row[0] or "")[:10]
+            date_str   = (row[0] or "")[:10]
             name       = row[1] or ""
             addr       = row[2] or ""
             subject    = (row[3] or "")[:80]
+            n_att      = int(row[4] or 0)
             sender_raw = name if name else addr
             sender     = _visual_pad(_visual_truncate(sender_raw, 10), 10)
-            # Catppuccin Mocha truecolor ANSI
+            # 📎 indicator: 2-wide emoji + space = 3 visual; else 3 spaces
+            att_prefix = "📎 " if n_att > 0 else "   "
+            # 표준 ANSI 16색 — dark/light 터미널 모두 호환
             return (
-                f"\033[38;2;180;190;254m{date}\033[0m"    # Lavender
+                f"\033[36m{date_str}\033[0m"  # cyan
                 f"  "
-                f"\033[38;2;166;227;161m{sender}\033[0m"  # Green
+                f"\033[32m{sender}\033[0m"    # green
                 f"  "
+                f"{att_prefix}"
                 f"{subject}"
             )
     except Exception:
@@ -254,7 +383,32 @@ def _print_fzf_lines(paths: list[str], db: Path) -> None:
 # 플랫폼별 fzf/에디터 설정
 # ---------------------------------------------------------------------------
 
-def build_fzf_preview_cmd(glow_path: str, bat_path: Optional[str]) -> str:
+def resolve_glow_style(cfg_style: str) -> str:
+    """config 의 glow_style 값을 실제 사용할 스타일 문자열로 변환한다.
+
+    우선순위:
+      1. config 에 값이 있으면 그대로 사용 (내장 테마명 또는 절대 경로)
+      2. 기본값 'dark'
+
+    커스텀 테마 사용 예 (config.toml):
+      glow_style = "dracula"
+      glow_style = "/home/user/.config/glow/catppuccin-mocha.json"
+      glow_style = "/path/to/psttomd/scripts/lib/mocha-glow.json"
+
+    Args:
+        cfg_style: config.toml 의 mailview.glow_style 값 (빈 문자열 가능).
+
+    Returns:
+        glow -s 에 전달할 테마명 또는 파일 경로 문자열.
+    """
+    return cfg_style if cfg_style else "dark"
+
+
+def build_fzf_preview_cmd(
+    glow_path: str,
+    bat_path: Optional[str],
+    glow_style: str = "",
+) -> str:
     """플랫폼에 맞는 fzf --preview 명령어 문자열을 생성한다.
 
     fzf 입력 형식: "레이블\\t파일경로" — {2} 가 경로를 가리킨다.
@@ -262,44 +416,41 @@ def build_fzf_preview_cmd(glow_path: str, bat_path: Optional[str]) -> str:
     우선순위: glow(마크다운 렌더링·컬러) → bat(구문 강조) → type/cat(플레인)
     bat 은 Ctrl-P 원문 보기 전용으로 분리한다.
 
-    glow 스타일:
-      scripts/lib/mocha-glow.json (Catppuccin Mocha) 파일이 있으면 사용하고,
-      없으면 내장 dark 테마로 폴백한다.
+    glow 스타일 결정:
+      glow_style 인자 → scripts/lib/mocha-glow.json 자동 탐지 → dark 폴백
+      (resolve_glow_style() 위임)
 
     경로 인용부호 전략:
       - Linux  : {2} 를 작은따옴표로 감쌈 → 공백·특수문자 안전
       - Windows: {2} 를 큰따옴표로 감쌈  → cmd.exe 공백 처리
-        (fzf 가 {2} 확장 후 따옴표가 적용되므로 이중 따옴표 불필요)
 
     Args:
-        glow_path: glow 실행 파일 절대 경로.
-        bat_path:  bat 실행 파일 절대 경로 (없으면 None, 폴백으로만 사용).
+        glow_path:  glow 실행 파일 절대 경로.
+        bat_path:   bat 실행 파일 절대 경로 (없으면 None).
+        glow_style: config 에서 전달된 스타일 값 (빈 문자열이면 자동 결정).
 
     Returns:
         fzf --preview 옵션에 전달할 명령어 문자열.
     """
-    plat = detect_platform()
-
-    # Catppuccin Mocha glow 테마 경로 — 없으면 내장 dark 폴백
-    _theme_file = Path(__file__).parent / "lib" / "mocha-glow.json"
-    glow_style  = str(_theme_file) if _theme_file.exists() else "dark"
+    plat  = detect_platform()
+    style = resolve_glow_style(glow_style)
 
     if plat == "windows":
-        item         = '"{2}"'
+        item          = '"{2}"'
         null_redirect = "2>nul"
         fallback = (
             f'"{bat_path}" --style=plain --color=always {item} {null_redirect}'
             if bat_path else f'type {item}'
         )
-        return f'"{glow_path}" -s "{glow_style}" {item} {null_redirect} || {fallback}'
+        return f'"{glow_path}" -s "{style}" {item} {null_redirect} || {fallback}'
     else:
-        item         = "'{2}'"
+        item          = "'{2}'"
         null_redirect = "2>/dev/null"
         fallback = (
             f"'{bat_path}' --style=plain --color=always {item} {null_redirect}"
             if bat_path else f"cat {item}"
         )
-        return f"'{glow_path}' -s '{glow_style}' {item} {null_redirect} || {fallback}"
+        return f"'{glow_path}' -s '{style}' {item} {null_redirect} || {fallback}"
 
 
 def get_editor() -> str:
@@ -481,6 +632,902 @@ def handle_open_attachments(md_path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 메일 삭제 핸들러 (Ctrl-D 에서 호출)
+# ---------------------------------------------------------------------------
+
+def _read_frontmatter_fields(md_path: str) -> dict[str, str]:
+    """MD 파일에서 삭제 확인 표시에 필요한 frontmatter 필드를 읽는다.
+
+    Args:
+        md_path: Markdown 파일 경로 문자열.
+
+    Returns:
+        {"subject": ..., "from": ..., "date": ..., "msgid": ...} 딕셔너리.
+        읽기 실패 시 빈 딕셔너리.
+    """
+    fields: dict[str, str] = {}
+    try:
+        text = Path(md_path).read_text(encoding="utf-8")
+        if not text.startswith("---"):
+            return fields
+        end = text.find("\n---\n", 3)
+        if end == -1:
+            return fields
+        for line in text[3:end].splitlines():
+            for key in ("subject", "from", "date", "msgid"):
+                if line.startswith(f"{key}:"):
+                    fields[key] = line.partition(":")[2].strip().strip('"')
+    except OSError:
+        pass
+    return fields
+
+
+def handle_delete_message(md_path: str, archive: str = "") -> None:
+    """선택한 메일의 MD 파일을 삭제하고 SQLite 인덱스에서 제거한다.
+
+    fzf 의 execute() 액션에서 호출된다.
+    삭제 전 메일 정보와 확인 프롬프트를 표시하고,
+    첨부 파일이 있으면 함께 삭제할지 추가로 묻는다.
+
+    FTS5 인덱스 정리:
+      messages 행 삭제 전에 subject/from_name/from_addr/to_addrs 와
+      MD 본문을 읽어 FTS5 'delete' 커맨드로 정확하게 제거한다.
+
+    Args:
+        md_path: 삭제할 Markdown 파일 경로 문자열.
+        archive: 아카이브 루트 경로 (비어 있으면 config 에서 로드).
+    """
+    path = Path(md_path)
+    if not path.exists():
+        click.echo("파일 없음.")
+        return
+
+    cfg = load_config()
+    if archive:
+        cfg["archive"]["root"] = archive
+    db = db_path(cfg)
+
+    # ── 메일 정보 표시 ────────────────────────────────────────────────────
+    fm = _read_frontmatter_fields(md_path)
+    click.echo("\n삭제할 메일")
+    click.echo("  " + "─" * 40)
+    click.echo(f"  날짜: {fm.get('date', '(없음)')}")
+    click.echo(f"  발신: {fm.get('from', '(없음)')}")
+    click.echo(f"  제목: {fm.get('subject', '(없음)')}")
+    click.echo(f"  경로: {md_path}")
+
+    # ── 첨부 파일 목록 ────────────────────────────────────────────────────
+    attachments = get_attachments_from_md(md_path)
+    if attachments:
+        click.echo(f"\n  첨부 파일 {len(attachments)}개:")
+        for att in attachments:
+            size_kb = Path(att["abs_path"]).stat().st_size // 1024
+            click.echo(f"    • {att['name']}  ({size_kb:,} KB)")
+
+    # ── 삭제 확인 ────────────────────────────────────────────────────────
+    click.echo("")
+    try:
+        answer = input("MD 파일을 삭제하시겠습니까? [y/N]: ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        click.echo("\n취소.")
+        return
+
+    if answer != "y":
+        click.echo("취소.")
+        return
+
+    # ── 첨부 파일 삭제 여부 확인 ─────────────────────────────────────────
+    delete_attachments = False
+    if attachments:
+        try:
+            att_answer = input(
+                f"첨부 파일 {len(attachments)}개도 함께 삭제하시겠습니까? [y/N]: "
+            ).strip().lower()
+            delete_attachments = att_answer == "y"
+        except (KeyboardInterrupt, EOFError):
+            delete_attachments = False
+
+    # ── FTS5 인덱스 정리 (파일 삭제 전에 본문 읽기) ──────────────────────
+    fts_cleaned = False
+    if db.exists():
+        try:
+            conn = sqlite3.connect(str(db))
+            try:
+                row = conn.execute(
+                    "SELECT id, subject, from_name, from_addr, to_addrs "
+                    "FROM messages WHERE path = ?",
+                    (md_path,),
+                ).fetchone()
+                if row:
+                    rowid, subj, fname, faddr, toaddrs = row
+                    # MD 본문 읽기 (파일이 아직 존재하는 시점)
+                    body = ""
+                    try:
+                        text = path.read_text(encoding="utf-8")
+                        if text.startswith("---"):
+                            end = text.find("\n---\n", 3)
+                            body = text[end + 4:].strip() if end != -1 else text.strip()
+                        else:
+                            body = text.strip()
+                    except OSError:
+                        pass
+                    # FTS5 contentless delete: 삽입 시와 동일한 값 필요
+                    conn.execute(
+                        "INSERT INTO messages_fts"
+                        "(messages_fts, rowid, subject, from_name, from_addr, to_addrs, body)"
+                        " VALUES('delete', ?, ?, ?, ?, ?, ?)",
+                        (rowid, subj or "", fname or "", faddr or "",
+                         toaddrs or "", body),
+                    )
+                    conn.execute("DELETE FROM messages WHERE id = ?", (rowid,))
+                    conn.execute(
+                        "DELETE FROM fts_sync WHERE path = ?", (md_path,)
+                    )
+                    conn.commit()
+                    fts_cleaned = True
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            click.echo(f"DB 업데이트 실패: {e}", err=True)
+
+    # ── MD 파일 삭제 ──────────────────────────────────────────────────────
+    try:
+        path.unlink()
+    except OSError as e:
+        click.echo(f"파일 삭제 실패: {e}", err=True)
+        return
+
+    # ── 첨부 파일 삭제 ────────────────────────────────────────────────────
+    deleted_atts: list[str] = []
+    failed_atts:  list[str] = []
+    if delete_attachments:
+        for att in attachments:
+            try:
+                Path(att["abs_path"]).unlink()
+                deleted_atts.append(att["name"])
+                # 빈 디렉터리 정리 (sha256 디렉터리)
+                parent = Path(att["abs_path"]).parent
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except OSError as e:
+                failed_atts.append(f"{att['name']} ({e})")
+
+    # ── 결과 출력 ────────────────────────────────────────────────────────
+    click.echo("✓ MD 파일 삭제 완료.")
+    if fts_cleaned:
+        click.echo("✓ 인덱스에서 제거.")
+    if deleted_atts:
+        click.echo(f"✓ 첨부 파일 {len(deleted_atts)}개 삭제: {', '.join(deleted_atts)}")
+    if failed_atts:
+        click.echo(f"✗ 첨부 파일 삭제 실패: {', '.join(failed_atts)}", err=True)
+
+
+# ---------------------------------------------------------------------------
+# 일괄 삭제 핸들러 (Ctrl-X — 멀티 선택 후 호출)
+# ---------------------------------------------------------------------------
+
+def handle_bulk_delete(archive: str = "") -> None:
+    """stdin 에서 경로를 읽어 복수의 MD 파일을 일괄 삭제한다.
+
+    fzf 의 execute() 액션에서 ``printf '%s\\n' {+2} | python mailview.py
+    --fzf-bulk-delete`` 형태로 호출된다. stdin 이 파이프이므로
+    확인 프롬프트는 /dev/tty (Linux) 또는 CONIN$ (Windows) 를 통해 읽는다.
+
+    Args:
+        archive: 아카이브 루트 경로 (비어 있으면 config 에서 로드).
+    """
+    raw = sys.stdin.read()
+    # Linux: printf '%s\n' {+2} → newline-separated
+    # Windows: echo {+2} → space-separated quoted ("p1" "p2")
+    lines = [p.strip().strip('"') for p in raw.splitlines() if p.strip()]
+    if len(lines) == 1 and '"' in raw:
+        # Windows 단일 라인 — 큰따옴표로 구분된 경로 파싱
+        lines = [p for p in shlex.split(lines[0]) if p.strip()]
+    paths = [p for p in lines if p]
+    if not paths:
+        click.echo("선택된 메일 없음.")
+        return
+
+    click.echo(f"\n일괄 삭제 대상 {len(paths)}개:")
+    for p in paths:
+        fm = _read_frontmatter_fields(p)
+        subj = fm.get("subject", Path(p).name)
+        date_s = fm.get("date", "")
+        click.echo(f"  • {date_s}  {subj}")
+
+    click.echo("")
+
+    # stdin 이 파이프이므로 /dev/tty (Linux) / CONIN$ (Windows) 에서 입력 읽기
+    plat = detect_platform()
+    try:
+        tty_path = "CONIN$" if plat == "windows" else "/dev/tty"
+        tty = open(tty_path)    # noqa: WPS515
+    except OSError:
+        tty = None
+
+    try:
+        prompt_msg = f"MD 파일 {len(paths)}개를 모두 삭제하시겠습니까? [y/N]: "
+        if tty:
+            click.echo(prompt_msg, nl=False)
+            answer = tty.readline().strip().lower()
+        else:
+            answer = input(prompt_msg).strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        click.echo("\n취소.")
+        return
+    finally:
+        if tty:
+            tty.close()
+
+    if answer != "y":
+        click.echo("취소.")
+        return
+
+    cfg = load_config()
+    if archive:
+        cfg["archive"]["root"] = archive
+    db = db_path(cfg)
+
+    ok, fail = 0, 0
+    for p in paths:
+        try:
+            # DB 정리
+            if db.exists():
+                conn = sqlite3.connect(str(db))
+                try:
+                    row = conn.execute(
+                        "SELECT id, subject, from_name, from_addr, to_addrs "
+                        "FROM messages WHERE path = ?", (p,)
+                    ).fetchone()
+                    if row:
+                        rowid, subj, fname, faddr, toaddrs = row
+                        body = ""
+                        try:
+                            text = Path(p).read_text(encoding="utf-8")
+                            if text.startswith("---"):
+                                end = text.find("\n---\n", 3)
+                                body = text[end + 4:].strip() if end != -1 else text.strip()
+                            else:
+                                body = text.strip()
+                        except OSError:
+                            pass
+                        conn.execute(
+                            "INSERT INTO messages_fts"
+                            "(messages_fts, rowid, subject, from_name, from_addr, to_addrs, body)"
+                            " VALUES('delete', ?, ?, ?, ?, ?, ?)",
+                            (rowid, subj or "", fname or "", faddr or "",
+                             toaddrs or "", body),
+                        )
+                        conn.execute("DELETE FROM messages WHERE id = ?", (rowid,))
+                        conn.execute("DELETE FROM fts_sync WHERE path = ?", (p,))
+                        conn.commit()
+                finally:
+                    conn.close()
+            # 파일 삭제
+            Path(p).unlink(missing_ok=True)
+            ok += 1
+        except (OSError, sqlite3.Error) as e:
+            click.echo(f"✗ 실패 [{Path(p).name}]: {e}", err=True)
+            fail += 1
+
+    click.echo(f"✓ {ok}개 삭제 완료." + (f"  ✗ {fail}개 실패." if fail else ""))
+
+
+# ---------------------------------------------------------------------------
+# URL 추출 및 열기 (Feature 3)
+# ---------------------------------------------------------------------------
+
+_URL_RE = re.compile(
+    r"https?://[^\s\)\]\>,\"']+",
+    re.IGNORECASE,
+)
+
+
+def extract_urls(md_path: str) -> list[str]:
+    """MD 파일 본문에서 URL 을 추출해 중복 없는 순서 목록으로 반환한다.
+
+    YAML frontmatter 는 제외하고 본문 텍스트에서만 추출한다.
+
+    Args:
+        md_path: 파싱할 Markdown 파일 경로 문자열.
+
+    Returns:
+        발견된 URL 목록 (순서 유지, 중복 제거).
+    """
+    try:
+        text = Path(md_path).read_text(encoding="utf-8")
+    except OSError:
+        return []
+
+    # frontmatter 건너뛰기
+    if text.startswith("---"):
+        end = text.find("\n---\n", 3)
+        body = text[end + 4:] if end != -1 else text
+    else:
+        body = text
+
+    seen: set[str] = set()
+    urls: list[str] = []
+    for url in _URL_RE.findall(body):
+        # 마크다운 링크 닫는 괄호/따옴표 후행 제거
+        url = url.rstrip(")].,'\"")
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
+
+
+def handle_open_url(md_path: str) -> None:
+    """MD 파일에서 URL 을 추출하고 fzf 피커로 선택해 브라우저로 연다.
+
+    fzf 의 execute() 액션에서 호출된다.
+    URL 이 1개이면 즉시 열고, 여러 개이면 fzf 피커를 띄운다.
+    fzf 가 없으면 번호 선택 방식으로 fallback 한다.
+
+    Args:
+        md_path: URL 을 추출할 Markdown 파일 경로 문자열.
+    """
+    urls = extract_urls(md_path)
+    if not urls:
+        click.echo("\nURL 없음.")
+        return
+
+    plat = detect_platform()
+
+    def _open(url: str) -> None:
+        if plat == "windows":
+            import webbrowser
+            webbrowser.open(url)
+        elif plat == "wsl":
+            if shutil.which("wslview"):
+                subprocess.Popen(["wslview", url],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.Popen(["explorer.exe", url],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(["xdg-open", url],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    if len(urls) == 1:
+        click.echo(f"\n열기: {urls[0]}")
+        _open(urls[0])
+        return
+
+    fzf = shutil.which("fzf")
+    if fzf:
+        result = subprocess.run(
+            [
+                fzf,
+                "--header", f"URL {len(urls)}개 — Enter:열기  ESC:취소",
+                "--reverse",
+                "--no-sort",
+            ],
+            input="\n".join(urls),
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        if result.returncode == 0:
+            selected = result.stdout.strip()
+            if selected:
+                click.echo(f"열기: {selected}")
+                _open(selected)
+    else:
+        click.echo(f"\nURL {len(urls)}개:")
+        for i, url in enumerate(urls, 1):
+            click.echo(f"  {i}. {url}")
+        try:
+            choice = int(input("\n번호 선택 (0=취소): "))
+            if 1 <= choice <= len(urls):
+                _open(urls[choice - 1])
+        except (ValueError, KeyboardInterrupt):
+            pass
+
+
+# ---------------------------------------------------------------------------
+# 태그 관리 (Feature 10)
+# ---------------------------------------------------------------------------
+
+def get_tag_list(db: Path) -> list[str]:
+    """DB 에서 사용 중인 태그 목록을 반환한다.
+
+    messages.tags 컬럼의 쉼표 구분 값을 모아 중복 제거 후 정렬한다.
+
+    Args:
+        db: 인덱스 SQLite 경로.
+
+    Returns:
+        알파벳/가나다순으로 정렬된 태그 이름 목록.
+    """
+    conn = sqlite3.connect(str(db))
+    rows = conn.execute(
+        "SELECT tags FROM messages WHERE tags IS NOT NULL AND tags != ''"
+    ).fetchall()
+    conn.close()
+    seen: set[str] = set()
+    tags: list[str] = []
+    for (tag_str,) in rows:
+        for t in tag_str.split(","):
+            t = t.strip()
+            if t and t not in seen:
+                seen.add(t)
+                tags.append(t)
+    return sorted(tags)
+
+
+def _update_frontmatter_tags(md_path: str, new_tags: list[str]) -> bool:
+    """MD 파일의 YAML frontmatter 에서 tags 필드를 업데이트한다.
+
+    tags 필드가 있으면 교체하고, 없으면 frontmatter 끝에 추가한다.
+    new_tags 가 비어 있으면 tags 필드를 삭제한다.
+
+    Args:
+        md_path:  업데이트할 Markdown 파일 경로.
+        new_tags: 새 태그 목록.
+
+    Returns:
+        성공 시 True, 파일 오류 시 False.
+    """
+    try:
+        text = Path(md_path).read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    if not text.startswith("---"):
+        return False
+    end = text.find("\n---\n", 3)
+    if end == -1:
+        return False
+
+    fm_lines = text[3:end].splitlines()
+    after_fm = text[end + 4:]
+
+    # 기존 tags 줄 제거
+    fm_lines = [l for l in fm_lines if not l.startswith("tags:")]
+
+    if new_tags:
+        tag_value = ", ".join(new_tags)
+        fm_lines.append(f"tags: [{tag_value}]")
+
+    new_fm = "\n".join(fm_lines)
+    new_text = f"---\n{new_fm}\n---\n{after_fm}"
+
+    try:
+        Path(md_path).write_text(new_text, encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def handle_tag_message(md_path: str, archive: str = "") -> None:
+    """선택한 메일에 태그를 추가/수정한다.
+
+    fzf 의 execute() 액션에서 호출된다.
+    현재 태그를 표시하고, 쉼표로 구분된 태그 입력을 받아
+    MD 파일 frontmatter 와 DB 를 동시에 업데이트한다.
+
+    Args:
+        md_path: 태그를 수정할 Markdown 파일 경로.
+        archive: 아카이브 루트 경로 (비어 있으면 config 에서 로드).
+    """
+    if not Path(md_path).exists():
+        click.echo("파일 없음.")
+        return
+
+    cfg = load_config()
+    if archive:
+        cfg["archive"]["root"] = archive
+    db = db_path(cfg)
+
+    # 현재 태그 조회
+    current_tags: list[str] = []
+    if db.exists():
+        conn = sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT tags FROM messages WHERE path = ? LIMIT 1", (md_path,)
+        ).fetchone()
+        conn.close()
+        if row and row[0]:
+            current_tags = [t.strip() for t in row[0].split(",") if t.strip()]
+
+    fm = _read_frontmatter_fields(md_path)
+    click.echo(f"\n메일: {fm.get('subject', Path(md_path).name)}")
+    click.echo(f"현재 태그: {', '.join(current_tags) if current_tags else '(없음)'}")
+    click.echo("  쉼표로 구분해 입력 (비우면 태그 삭제):")
+
+    try:
+        raw = input("태그: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        click.echo("\n취소.")
+        return
+
+    new_tags = [t.strip() for t in raw.split(",") if t.strip()] if raw else []
+
+    # MD 파일 업데이트
+    if not _update_frontmatter_tags(md_path, new_tags):
+        click.echo("오류: frontmatter 업데이트 실패.", err=True)
+        return
+
+    # DB 업데이트
+    if db.exists():
+        tag_str = ", ".join(new_tags)
+        try:
+            conn = sqlite3.connect(str(db))
+            try:
+                conn.execute(
+                    "UPDATE messages SET tags = ? WHERE path = ?",
+                    (tag_str, md_path),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            click.echo(f"DB 업데이트 실패: {e}", err=True)
+            return
+
+    if new_tags:
+        click.echo(f"✓ 태그 설정: {', '.join(new_tags)}")
+    else:
+        click.echo("✓ 태그 삭제 완료.")
+
+
+# ---------------------------------------------------------------------------
+# 스레드 트리 (Feature 13)
+# ---------------------------------------------------------------------------
+
+def build_thread_tree(
+    db: Path,
+    thread_id: str,
+) -> list[tuple[int, str, str, str]]:
+    """스레드 내 메일을 부모-자식 관계로 정렬한 트리 목록을 반환한다.
+
+    in_reply_to 컬럼을 사용해 계층 구조를 재구성한다.
+    in_reply_to 가 없는 메일은 루트로, 있으면 해당 msgid 의 자식으로 배치한다.
+
+    Args:
+        db:        인덱스 SQLite 경로.
+        thread_id: 스레드 ID (messages.thread 컬럼).
+
+    Returns:
+        [(depth, path, msgid, subject), ...] 깊이 우선 순서 목록.
+    """
+    conn = sqlite3.connect(str(db))
+    rows = conn.execute(
+        """SELECT msgid, in_reply_to, path, subject, date
+           FROM messages WHERE thread = ? ORDER BY date""",
+        (thread_id,),
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return []
+
+    # msgid → (in_reply_to, path, subject) 맵
+    by_msgid: dict[str, tuple[str, str, str]] = {}
+    for msgid, irt, path, subj, _ in rows:
+        by_msgid[msgid] = (irt or "", path or "", subj or "")
+
+    # 부모 → 자식들 맵
+    children: dict[str, list[str]] = {m: [] for m in by_msgid}
+    roots: list[str] = []
+    for msgid, (irt, _, _) in by_msgid.items():
+        if irt and irt in by_msgid:
+            children[irt].append(msgid)
+        else:
+            roots.append(msgid)
+
+    # 깊이 우선 탐색
+    result: list[tuple[int, str, str, str]] = []
+
+    def _dfs(msgid: str, depth: int) -> None:
+        _, path, subj = by_msgid[msgid]
+        result.append((depth, path, msgid, subj))
+        for child in sorted(children[msgid]):
+            _dfs(child, depth + 1)
+
+    for root in sorted(roots):
+        _dfs(root, 0)
+
+    return result
+
+
+def format_thread_tree(tree: list[tuple[int, str, str, str]]) -> list[str]:
+    """build_thread_tree() 결과를 ASCII 트리 형식 문자열 목록으로 변환한다.
+
+    Args:
+        tree: build_thread_tree() 가 반환한 [(depth, path, msgid, subject), ...].
+
+    Returns:
+        각 메일을 한 줄로 표현한 문자열 목록.
+    """
+    if not tree:
+        return ["스레드 없음."]
+    lines: list[str] = [""]
+    for depth, path, _, subject in tree:
+        indent = "  " * depth
+        prefix = "└─ " if depth > 0 else "● "
+        subj = subject[:60] if subject else "(제목 없음)"
+        lines.append(f"   {indent}{prefix}{subj}")
+        if path:
+            lines.append(f"   {indent}   {path}")
+    lines.append("")
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# 중복 메일 감지 (Feature 12)
+# ---------------------------------------------------------------------------
+
+def find_duplicate_groups(db: Path) -> list[list[str]]:
+    """동일한 (날짜+발신자+제목) 조합을 가진 중복 메일 그룹을 반환한다.
+
+    DB 의 msgid UNIQUE 제약으로 인해 msgid 기준 중복은 발생하지 않는다.
+    대신 (date + from_addr + subject) 조합이 동일한 메일을 중복으로 간주한다.
+    이는 여러 PST 파일에서 동일 메일이 중복 변환된 경우를 감지한다.
+
+    각 그룹에서 경로가 첫 번째인 항목을 대표로, 나머지를 중복으로 반환한다.
+
+    Args:
+        db: 인덱스 SQLite 경로.
+
+    Returns:
+        [[대표경로, 중복경로1, ...], ...] 형태의 중복 그룹 목록.
+        각 그룹 길이는 2 이상.
+    """
+    conn = sqlite3.connect(str(db))
+    rows = conn.execute("""
+        SELECT
+            COALESCE(substr(date,1,10),'') || '|' ||
+            COALESCE(from_addr,'') || '|' ||
+            COALESCE(subject,'') AS key,
+            GROUP_CONCAT(path, '|') AS paths,
+            COUNT(*) AS cnt
+        FROM messages
+        GROUP BY key
+        HAVING cnt > 1 AND key != '||'
+        ORDER BY key
+    """).fetchall()
+    conn.close()
+
+    groups: list[list[str]] = []
+    for _, paths_str, _ in rows:
+        paths = [p for p in paths_str.split("|") if p and Path(p).exists()]
+        if len(paths) >= 2:
+            groups.append(paths)
+
+    return groups
+
+
+def handle_dedupe(archive: str = "", dry_run: bool = False) -> None:
+    """중복 메일을 감지하고 선택적으로 삭제한다.
+
+    각 중복 그룹에서 첫 번째 항목을 대표로 유지하고,
+    나머지를 fzf 피커로 확인 후 삭제한다.
+
+    Args:
+        archive:  아카이브 루트 경로 (비어 있으면 config 에서 로드).
+        dry_run:  True 이면 삭제 없이 중복 목록만 출력한다.
+    """
+    cfg = load_config()
+    if archive:
+        cfg["archive"]["root"] = archive
+    db = db_path(cfg)
+
+    if not db.exists():
+        click.echo(f"오류: 인덱스 없음 → {db}", err=True)
+        return
+
+    click.echo("중복 메일 검사 중...", err=True)
+    groups = find_duplicate_groups(db)
+
+    if not groups:
+        click.echo("중복 메일 없음.")
+        return
+
+    total_dups = sum(len(g) - 1 for g in groups)
+    click.echo(f"중복 그룹: {len(groups)}개, 삭제 대상: {total_dups}개")
+
+    if dry_run:
+        for i, group in enumerate(groups, 1):
+            click.echo(f"\n그룹 {i} ({len(group)}개):")
+            for j, p in enumerate(group):
+                fm = _read_frontmatter_fields(p)
+                mark = "[대표]" if j == 0 else "[중복]"
+                click.echo(f"  {mark} {fm.get('date','?')}  {fm.get('subject','?')}")
+                click.echo(f"         {p}")
+        return
+
+    # 삭제할 경로 목록 (각 그룹에서 첫 번째 제외)
+    to_delete: list[str] = []
+    for group in groups:
+        to_delete.extend(group[1:])
+
+    click.echo(f"\n삭제 대상 {len(to_delete)}개:")
+    for p in to_delete:
+        fm = _read_frontmatter_fields(p)
+        click.echo(f"  • {fm.get('date','?')}  {fm.get('subject','?')}")
+        click.echo(f"    {p}")
+
+    click.echo("")
+    try:
+        answer = input(f"위 {len(to_delete)}개를 삭제하시겠습니까? [y/N]: ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        click.echo("\n취소.")
+        return
+
+    if answer != "y":
+        click.echo("취소.")
+        return
+
+    ok, fail = 0, 0
+    for p in to_delete:
+        try:
+            conn = sqlite3.connect(str(db))
+            try:
+                row = conn.execute(
+                    "SELECT id, subject, from_name, from_addr, to_addrs "
+                    "FROM messages WHERE path = ?", (p,)
+                ).fetchone()
+                if row:
+                    rowid, subj, fname, faddr, toaddrs = row
+                    body = ""
+                    try:
+                        text = Path(p).read_text(encoding="utf-8")
+                        if text.startswith("---"):
+                            end = text.find("\n---\n", 3)
+                            body = text[end + 4:].strip() if end != -1 else text.strip()
+                        else:
+                            body = text.strip()
+                    except OSError:
+                        pass
+                    conn.execute(
+                        "INSERT INTO messages_fts"
+                        "(messages_fts, rowid, subject, from_name, from_addr, to_addrs, body)"
+                        " VALUES('delete', ?, ?, ?, ?, ?, ?)",
+                        (rowid, subj or "", fname or "", faddr or "",
+                         toaddrs or "", body),
+                    )
+                    conn.execute("DELETE FROM messages WHERE id = ?", (rowid,))
+                    conn.execute("DELETE FROM fts_sync WHERE path = ?", (p,))
+                    conn.commit()
+            finally:
+                conn.close()
+            Path(p).unlink(missing_ok=True)
+            ok += 1
+        except (OSError, sqlite3.Error) as e:
+            click.echo(f"✗ 실패 [{Path(p).name}]: {e}", err=True)
+            fail += 1
+
+    click.echo(f"✓ {ok}개 삭제 완료." + (f"  ✗ {fail}개 실패." if fail else ""))
+
+
+# ---------------------------------------------------------------------------
+# 아카이브 통계 (Feature 11)
+# ---------------------------------------------------------------------------
+
+def format_stats_for_display(db: Path, archive_root_path: Path) -> list[str]:
+    """아카이브 요약 통계를 출력 가능한 줄 목록으로 반환한다.
+
+    fzf --disabled 팝업에 표시하기 위한 형식으로 구성한다.
+
+    Args:
+        db:                인덱스 SQLite 경로.
+        archive_root_path: 아카이브 루트 디렉터리 Path.
+
+    Returns:
+        줄 문자열 목록.
+    """
+    if not db.exists():
+        return ["인덱스 없음."]
+
+    lines: list[str] = ["", "   === 아카이브 요약 ===", "   " + "─" * 36]
+    try:
+        conn = sqlite3.connect(str(db))
+        row = conn.execute("""
+            SELECT
+                COUNT(*)                                     AS total,
+                COUNT(DISTINCT from_addr)                    AS senders,
+                COUNT(DISTINCT thread)                       AS threads,
+                SUM(COALESCE(n_attachments,0))               AS attachments,
+                MIN(substr(date,1,10))                       AS oldest,
+                MAX(substr(date,1,10))                       AS newest
+            FROM messages
+        """).fetchone()
+
+        # 월별 Top-5
+        monthly = conn.execute("""
+            SELECT substr(date,1,7) AS month, COUNT(*) AS cnt
+            FROM messages WHERE date != ''
+            GROUP BY 1 ORDER BY 1 DESC LIMIT 5
+        """).fetchall()
+
+        # 발신자 Top-5
+        senders = conn.execute("""
+            SELECT COALESCE(NULLIF(from_name,''), from_addr) AS name,
+                   COUNT(*) AS cnt
+            FROM messages GROUP BY from_addr ORDER BY cnt DESC LIMIT 5
+        """).fetchall()
+
+        conn.close()
+
+        if row:
+            lines += [
+                f"   총 메일:      {row[0]:,}통",
+                f"   고유 발신자:  {row[1]:,}명",
+                f"   스레드:       {row[2]:,}개",
+                f"   첨부 파일:    {row[3]:,}개",
+                f"   기간:         {row[4] or '?'} ~ {row[5] or '?'}",
+            ]
+
+        if monthly:
+            lines += ["", "   최근 월별 메일 수:", "   " + "─" * 20]
+            for m, c in monthly:
+                bar = "█" * min(c // max(1, (monthly[0][1] // 10 + 1)), 20)
+                lines.append(f"   {m}  {bar:<20}  {c:>5}통")
+
+        if senders:
+            lines += ["", "   상위 발신자:", "   " + "─" * 36]
+            for name, cnt in senders:
+                truncated = (name or "")[:24]
+                lines.append(f"   {truncated:<24}  {cnt:>5}통")
+
+    except sqlite3.Error as e:
+        lines.append(f"   DB 오류: {e}")
+
+    lines.append("")
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# 인덱스 자동 갱신 (Feature 5)
+# ---------------------------------------------------------------------------
+
+def auto_update_index(archive_root_path: Path, cfg: dict) -> None:
+    """아카이브에 새 MD 파일이 있으면 인덱스를 자동으로 증분 갱신한다.
+
+    config 의 mailview.auto_index 가 False 이면 즉시 반환한다.
+    DB 가 없으면 스킵 (사용자가 먼저 build-index 를 실행해야 한다).
+    archive/  하위 .md 파일 중 DB mtime 보다 새 파일이 있을 때만
+    build_index.py 를 서브프로세스로 호출한다 (증분 모드).
+
+    Args:
+        archive_root_path: 아카이브 루트 디렉터리 Path.
+        cfg:               load_config() 결과.
+    """
+    if not cfg.get("mailview", {}).get("auto_index", True):
+        return
+
+    db = db_path(cfg)
+    if not db.exists():
+        return  # DB 없음 — 사용자가 직접 build-index 실행 필요
+
+    db_mtime = db.stat().st_mtime
+
+    archive_dir = archive_root_path / "archive"
+    if not archive_dir.exists():
+        return
+
+    has_new = any(
+        p.stat().st_mtime > db_mtime
+        for p in archive_dir.rglob("*.md")
+    )
+    if not has_new:
+        return
+
+    build_script = Path(__file__).parent / "build_index.py"
+    result = subprocess.run(
+        [sys.executable, str(build_script), "--archive", str(archive_root_path)],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    if result.returncode != 0:
+        click.echo(f"[auto-index] 갱신 실패: {result.stderr.strip()}", err=True)
+    else:
+        out = (result.stdout or "").strip()
+        if out:
+            # 마지막 줄(요약)만 표시
+            click.echo(f"[auto-index] {out.splitlines()[-1]}", err=True)
+
+
+# ---------------------------------------------------------------------------
 # CLI 커맨드
 # ---------------------------------------------------------------------------
 
@@ -493,22 +1540,92 @@ def handle_open_attachments(md_path: str) -> None:
 @click.option("--thread",  default="", help="스레드 ID")
 @click.option("--body",    "body_filter", default="", help="본문 내용 전용 검색")
 @click.option("--archive", default="", help="아카이브 루트")
+@click.option("--dedupe",  is_flag=True, help="중복 메일 감지 및 정리")
+@click.option("--dry-run", "dry_run", is_flag=True, help="--dedupe 와 함께 사용: 삭제 없이 목록만 출력")
 # ── 내부 히든 모드 (fzf execute/reload 에서 호출) ──────────────────────
-@click.option("--open-att",  "_open_att",   default="", hidden=True,
+@click.option("--open-att",   "_open_att",    default="", hidden=True,
               help="내부용: 지정 MD 파일의 첨부 파일 열기")
-@click.option("--fzf-input", "_fzf_input",  is_flag=True, hidden=True,
+@click.option("--open-url",   "_open_url",    default="", hidden=True,
+              help="내부용: 지정 MD 파일의 URL 추출 후 선택 열기")
+@click.option("--delete-msg", "_delete_msg",  default="", hidden=True,
+              help="내부용: 지정 MD 파일 삭제")
+@click.option("--fzf-input",       "_fzf_input",       is_flag=True, hidden=True,
               help="내부용: fzf reload 용 레이블\\t경로 출력")
-@click.option("--show-help", "_show_help",  is_flag=True, hidden=True,
+@click.option("--show-help",       "_show_help",       is_flag=True, hidden=True,
               help="내부용: 키 바인딩 도움말 출력")
+@click.option("--fzf-bulk-delete", "_fzf_bulk_delete", is_flag=True, hidden=True,
+              help="내부용: stdin 에서 경로를 읽어 일괄 삭제")
+@click.option("--list-folders",    "_list_folders",    is_flag=True, hidden=True,
+              help="내부용: 폴더 목록 출력 (sub-fzf 용)")
+@click.option("--get-thread",      "_get_thread",      default="", hidden=True,
+              help="내부용: 지정 MD 파일의 스레드 ID 출력")
+@click.option("--tag-msg",         "_tag_msg",         default="", hidden=True,
+              help="내부용: 지정 MD 파일 태그 수정")
+@click.option("--list-tags",       "_list_tags",       is_flag=True, hidden=True,
+              help="내부용: 태그 목록 출력 (sub-fzf 용)")
+@click.option("--tag-filter",      default="", hidden=True,
+              help="내부용: 태그 필터 (fzf-input 에서 사용)")
+@click.option("--show-stats",      "_show_stats",      is_flag=True, hidden=True,
+              help="내부용: 아카이브 통계 출력 (Alt-I 팝업용)")
+@click.option("--thread-tree",     "_thread_tree",     default="", hidden=True,
+              help="내부용: 지정 MD 파일의 스레드 트리 출력")
+@click.option("--sort", default="date", hidden=True,
+              help="내부용: fzf-input 정렬 기준 (date|from|subject)")
 def main(
     query, from_filter, after, before, folder, thread,
-    body_filter, archive, _open_att, _fzf_input, _show_help,
+    body_filter, archive, dedupe, dry_run, _open_att, _open_url, _delete_msg,
+    _fzf_input, _show_help, _fzf_bulk_delete, _list_folders, _get_thread,
+    _tag_msg, _list_tags, tag_filter, _show_stats, _thread_tree, sort,
 ):
     """fzf + glow 인터랙티브 메일 뷰어."""
+
+    # ── --dedupe 중복 감지 모드 ──────────────────────────────────────────
+    if dedupe:
+        handle_dedupe(archive, dry_run)
+        return
 
     # ── Ctrl-A 첨부 열기 모드 ────────────────────────────────────────────
     if _open_att:
         handle_open_attachments(_open_att)
+        return
+
+    # ── Ctrl-U URL 열기 모드 ─────────────────────────────────────────────
+    if _open_url:
+        handle_open_url(_open_url)
+        return
+
+    # ── Ctrl-D 메일 삭제 모드 ────────────────────────────────────────────
+    if _delete_msg:
+        handle_delete_message(_delete_msg, archive)
+        return
+
+    # ── 스레드 트리 출력 모드 (Ctrl-T 확장용) ────────────────────────────
+    if _thread_tree:
+        cfg = load_config()
+        if archive:
+            cfg["archive"]["root"] = archive
+        db = db_path(cfg)
+        conn = sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT thread FROM messages WHERE path = ? LIMIT 1", (_thread_tree,)
+        ).fetchone()
+        conn.close()
+        if row and row[0]:
+            tree = build_thread_tree(db, row[0])
+            for line in format_thread_tree(tree):
+                click.echo(line)
+        else:
+            click.echo("스레드 없음.")
+        return
+
+    # ── 통계 출력 모드 (Alt-I → fzf --disabled 팝업) ────────────────────
+    if _show_stats:
+        cfg = load_config()
+        if archive:
+            cfg["archive"]["root"] = archive
+        db = db_path(cfg)
+        for line in format_stats_for_display(db, archive_root(cfg)):
+            click.echo(line)
         return
 
     # ── 도움말 출력 모드 (? 키 → fzf --disabled 팝업) ───────────────────
@@ -517,17 +1634,69 @@ def main(
             click.echo(line)
         return
 
-    # ── fzf reload 출력 모드 (Ctrl-B / Ctrl-R) ───────────────────────────
+    # ── 일괄 삭제 모드 (Ctrl-X) ─────────────────────────────────────────
+    if _fzf_bulk_delete:
+        handle_bulk_delete(archive)
+        return
+
+    # ── 폴더 목록 출력 모드 (Ctrl-F 서브 fzf 용) ────────────────────────
+    if _list_folders:
+        cfg = load_config()
+        if archive:
+            cfg["archive"]["root"] = archive
+        db = db_path(cfg)
+        for folder_name in get_folder_list(db):
+            click.echo(folder_name)
+        return
+
+    # ── 태그 수정 모드 (Ctrl-K) ──────────────────────────────────────────
+    if _tag_msg:
+        handle_tag_message(_tag_msg, archive)
+        return
+
+    # ── 태그 목록 출력 모드 (Alt-T 서브 fzf 용) ─────────────────────────
+    if _list_tags:
+        cfg = load_config()
+        if archive:
+            cfg["archive"]["root"] = archive
+        db = db_path(cfg)
+        for tag_name in get_tag_list(db):
+            click.echo(tag_name)
+        return
+
+    # ── 스레드 ID 출력 모드 (Ctrl-T 서브 fzf 용) ────────────────────────
+    if _get_thread:
+        cfg = load_config()
+        if archive:
+            cfg["archive"]["root"] = archive
+        db = db_path(cfg)
+        conn = sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT thread FROM messages WHERE path = ? LIMIT 1", (_get_thread,)
+        ).fetchone()
+        conn.close()
+        if row and row[0]:
+            click.echo(row[0])
+        return
+
+    # ── fzf reload 출력 모드 (Ctrl-B / Ctrl-F / Ctrl-T / Ctrl-R / Alt-* ) ──
     if _fzf_input:
         cfg = load_config()
         if archive:
             cfg["archive"]["root"] = archive
         db = db_path(cfg)
-        if body_filter:
-            archive_arg = ["--archive", cfg["archive"]["root"]] if archive else []
-            paths = get_paths_from_query(archive_arg + ["--body", body_filter])
+        archive_arg = ["--archive", cfg["archive"]["root"]] if archive else []
+        if tag_filter:
+            # 태그 필터는 직접 DB 쿼리 (mailgrep 경유 불필요)
+            paths = get_paths_by_tag(db, tag_filter)
+        elif body_filter or folder or thread:
+            extra: list[str] = []
+            if body_filter: extra += ["--body",   body_filter]
+            if folder:      extra += ["--folder", folder]
+            if thread:      extra += ["--thread", thread]
+            paths = get_paths_from_query(archive_arg + extra)
         else:
-            paths = get_recent_paths(db)
+            paths = get_recent_paths(db, after=after, sort=sort)
         _print_fzf_lines(paths, db)
         return
 
@@ -540,6 +1709,9 @@ def main(
     if not db.exists():
         click.echo(f"오류: 인덱스 없음 → {db}", err=True)
         sys.exit(1)
+
+    # ── 인덱스 자동 갱신 (새 MD 파일이 있을 때만) ────────────────────────
+    auto_update_index(archive_root(cfg), cfg)
 
     plat     = detect_platform()
     fzf_hint  = "winget install fzf"                if plat == "windows" else "sudo apt install fzf"
@@ -579,11 +1751,20 @@ def main(
             tmp_file.write(f"{label}\t{p}\n")
         tmp_file.close()
 
-        preview_cmd  = build_fzf_preview_cmd(glow_path, bat_path)
+        cfg_glow_style = cfg.get("mailview", {}).get("glow_style", "")
+        preview_cmd  = build_fzf_preview_cmd(glow_path, bat_path, cfg_glow_style)
+        _glow_style  = resolve_glow_style(cfg_glow_style)
         editor       = get_editor()
         script_path  = str(Path(__file__).resolve())
         py           = sys.executable
         archive_path = str(cfg["archive"]["root"])
+
+        # 날짜 필터 프리셋 ISO 문자열 계산
+        _today  = date.today()
+        _today_iso  = _today.isoformat()
+        _week_iso   = (_today - timedelta(days=7)).isoformat()
+        _month_iso  = (_today - timedelta(days=30)).isoformat()
+        _year_iso   = (_today - timedelta(days=365)).isoformat()
 
         # ── execute()/reload() 바인딩 경로 인용부호 ───────────────────────
         # fzf 는 execute("cmd {2}") 에서 {2} 를 그대로 치환한다.
@@ -593,55 +1774,190 @@ def main(
         #   Windows (cmd /c) : 큰따옴표   "{2}"
         #
         # Python/스크립트 경로도 동일하게 인용부호로 감싼다.
-        # Catppuccin Mocha 색상 (truecolor)
-        _MOCHA_COLORS = (
-            "bg:#1e1e2e,bg+:#313244,fg:#cdd6f4,fg+:#cdd6f4,"
-            "hl:#b4befe,hl+:#b4befe,border:#45475a,label:#b4befe,"
-            "prompt:#89b4fa,pointer:#f38ba8,marker:#a6e3a1,"
-            "info:#a6e3a1,header:#6c7086,spinner:#b4befe"
-        )
+        # fzf 색상: dark 기본 (터미널 16색 기반)
+        # 커스텀 색상 예: config.toml 에서 직접 fzf 옵션을 확장하거나
+        # 아래 _FZF_COLORS 를 Catppuccin Mocha 등으로 교체해 사용
+        _FZF_COLORS = "dark"
 
         if plat == "windows":
             q = '"'
-            open_att_cmd  = f'{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}'
-            editor_cmd    = f'{q}{editor}{q} {q}{{2}}{q}'
-            bat_cmd       = f'{q}{bat_path}{q} --style=full {q}{{2}}{q}' if bat_path else None
-            pager_cmd     = f'more {q}{{2}}{q}'
-            # fzf-input reload: --body {q} 는 fzf 가 검색창 텍스트로 치환
-            body_reload   = (
+            open_att_cmd   = f'{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}'
+            open_url_cmd   = f'{q}{py}{q} {q}{script_path}{q} --open-url {q}{{2}}{q}'
+            delete_cmd     = (
+                f'{q}{py}{q} {q}{script_path}{q} --delete-msg {q}{{2}}{q} '
+                f'--archive {q}{archive_path}{q}'
+            )
+            bulk_del_cmd   = (
+                f'echo {{+2}} | {q}{py}{q} {q}{script_path}{q} --fzf-bulk-delete '
+                f'--archive {q}{archive_path}{q}'
+            )
+            editor_cmd     = f'{q}{editor}{q} {q}{{2}}{q}'
+            bat_cmd        = f'{q}{bat_path}{q} --style=full {q}{{2}}{q}' if bat_path else None
+            pager_cmd      = f'more {q}{{2}}{q}'
+            body_reload    = (
                 f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
                 f'--body {q}{{q}}{q} --archive {q}{archive_path}{q}'
             )
-            reset_reload  = (
+            reset_reload   = (
                 f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
                 f'--archive {q}{archive_path}{q}'
             )
-            help_popup    = (
+            sort_from_reload = (
+                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
+                f'--sort from --archive {q}{archive_path}{q}'
+            )
+            sort_subj_reload = (
+                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
+                f'--sort subject --archive {q}{archive_path}{q}'
+            )
+            today_reload   = (
+                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
+                f'--after {q}{_today_iso}{q} --archive {q}{archive_path}{q}'
+            )
+            week_reload    = (
+                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
+                f'--after {q}{_week_iso}{q} --archive {q}{archive_path}{q}'
+            )
+            month_reload   = (
+                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
+                f'--after {q}{_month_iso}{q} --archive {q}{archive_path}{q}'
+            )
+            year_reload    = (
+                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
+                f'--after {q}{_year_iso}{q} --archive {q}{archive_path}{q}'
+            )
+            help_popup     = (
                 f'{q}{py}{q} {q}{script_path}{q} --show-help '
                 f'| {q}{fzf_path}{q} --disabled --no-info '
                 f'--border=rounded --border-label=" 도움말 " '
-                f'--color "{_MOCHA_COLORS}"'
+                f'--color "{_FZF_COLORS}"'
+            )
+            tag_cmd        = (
+                f'{q}{py}{q} {q}{script_path}{q} --tag-msg {q}{{2}}{q} '
+                f'--archive {q}{archive_path}{q}'
+            )
+            stats_popup    = (
+                f'{q}{py}{q} {q}{script_path}{q} --show-stats '
+                f'--archive {q}{archive_path}{q} '
+                f'| {q}{fzf_path}{q} --disabled --no-info '
+                f'--border=rounded --border-label=" 통계 " '
+                f'--color "{_FZF_COLORS}"'
             )
         else:
             q = "'"
-            open_att_cmd  = f"{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}"
-            editor_cmd    = f"{q}{editor}{q} {q}{{2}}{q}"
-            bat_cmd       = f"{q}{bat_path}{q} --style=full {q}{{2}}{q}" if bat_path else None
-            pager_cmd     = f"less {q}{{2}}{q}"
-            body_reload   = (
+            open_att_cmd   = f"{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}"
+            open_url_cmd   = f"{q}{py}{q} {q}{script_path}{q} --open-url {q}{{2}}{q}"
+            delete_cmd     = (
+                f"{q}{py}{q} {q}{script_path}{q} --delete-msg {q}{{2}}{q} "
+                f"--archive {q}{archive_path}{q}"
+            )
+            bulk_del_cmd   = (
+                f"printf '%s\\n' {{+2}} | "
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-bulk-delete "
+                f"--archive {q}{archive_path}{q}"
+            )
+            editor_cmd     = f"{q}{editor}{q} {q}{{2}}{q}"
+            bat_cmd        = f"{q}{bat_path}{q} --style=full {q}{{2}}{q}" if bat_path else None
+            pager_cmd      = f"less {q}{{2}}{q}"
+            body_reload    = (
                 f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
                 f"--body {q}{{q}}{q} --archive {q}{archive_path}{q}"
             )
-            reset_reload  = (
+            reset_reload   = (
                 f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
                 f"--archive {q}{archive_path}{q}"
             )
-            help_popup    = (
+            sort_from_reload = (
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
+                f"--sort from --archive {q}{archive_path}{q}"
+            )
+            sort_subj_reload = (
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
+                f"--sort subject --archive {q}{archive_path}{q}"
+            )
+            today_reload   = (
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
+                f"--after {q}{_today_iso}{q} --archive {q}{archive_path}{q}"
+            )
+            week_reload    = (
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
+                f"--after {q}{_week_iso}{q} --archive {q}{archive_path}{q}"
+            )
+            month_reload   = (
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
+                f"--after {q}{_month_iso}{q} --archive {q}{archive_path}{q}"
+            )
+            year_reload    = (
+                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
+                f"--after {q}{_year_iso}{q} --archive {q}{archive_path}{q}"
+            )
+            help_popup     = (
                 f"{q}{py}{q} {q}{script_path}{q} --show-help "
                 f"| {q}{fzf_path}{q} --disabled --no-info "
                 f"--border=rounded --border-label={q} 도움말 {q} "
-                f"--color {q}{_MOCHA_COLORS}{q}"
+                f"--color {q}{_FZF_COLORS}{q}"
             )
+            tag_cmd        = (
+                f"{q}{py}{q} {q}{script_path}{q} --tag-msg {q}{{2}}{q} "
+                f"--archive {q}{archive_path}{q}"
+            )
+            stats_popup    = (
+                f"{q}{py}{q} {q}{script_path}{q} --show-stats "
+                f"--archive {q}{archive_path}{q} "
+                f"| {q}{fzf_path}{q} --disabled --no-info "
+                f"--border=rounded --border-label={q} 통계 {q} "
+                f"--color {q}{_FZF_COLORS}{q}"
+            )
+
+        # ── 3단계: 검색 하이라이트 / 폴더 브라우저 / 스레드 뷰 ─────────────
+        # Linux/WSL 전용 (transform action: fzf 0.47+ 필요)
+        if plat in ("linux", "wsl"):
+            # Ctrl-B 활성 시: grep 으로 {q} 매칭 라인 강조 (fallback: glow)
+            search_preview_cmd = (
+                f"grep --color=always -i -n -A2 -B2 '{{q}}' '{{2}}' 2>/dev/null"
+                f" || '{glow_path}' -s '{_glow_style}' '{{2}}' 2>/dev/null"
+            )
+            # Ctrl-F: 폴더 브라우저 → 선택 폴더로 목록 reload
+            folder_transform = (
+                f"FOLDER=$({q}{py}{q} {q}{script_path}{q} --list-folders"
+                f" --archive {q}{archive_path}{q} | fzf --prompt={q}폴더> {q}"
+                f" --header={q}Enter:선택  ESC:취소{q});"
+                f" [ -n \"$FOLDER\" ] && printf"
+                f" \"change-prompt(%s> )+reload({q}{py}{q} {q}{script_path}{q}"
+                f" --fzf-input --folder '%s' --archive {q}{archive_path}{q})\""
+                f" \"$FOLDER\" \"$FOLDER\""
+            )
+            # Ctrl-T: 스레드 트리 팝업 표시 후 스레드 필터로 reload
+            thread_transform = (
+                f"THREAD=$({q}{py}{q} {q}{script_path}{q} --get-thread {q}{{2}}{q}"
+                f" --archive {q}{archive_path}{q});"
+                f" [ -n \"$THREAD\" ] &&"
+                f" {q}{py}{q} {q}{script_path}{q} --thread-tree {q}{{2}}{q}"
+                f" --archive {q}{archive_path}{q}"
+                f" | {q}{fzf_path}{q} --disabled --no-info"
+                f" --border=rounded --border-label=' 스레드 트리 '"
+                f" --color {q}{_FZF_COLORS}{q};"
+                f" [ -n \"$THREAD\" ] && printf"
+                f" \"change-prompt(스레드> )+reload({q}{py}{q} {q}{script_path}{q}"
+                f" --fzf-input --thread '%s' --archive {q}{archive_path}{q})\""
+                f" \"$THREAD\""
+            )
+            # Alt-T: 태그 브라우저 → 선택 태그로 목록 reload
+            tag_transform = (
+                f"TAG=$({q}{py}{q} {q}{script_path}{q} --list-tags"
+                f" --archive {q}{archive_path}{q} | fzf --prompt={q}태그> {q}"
+                f" --header={q}Enter:선택  ESC:취소{q});"
+                f" [ -n \"$TAG\" ] && printf"
+                f" \"change-prompt(태그:%%s> )+reload({q}{py}{q} {q}{script_path}{q}"
+                f" --fzf-input --tag-filter '%%s' --archive {q}{archive_path}{q})\""
+                f" \"$TAG\" \"$TAG\""
+            )
+        else:
+            # Windows: 검색 하이라이트 없이 glow 미리보기 유지
+            search_preview_cmd = preview_cmd
+            folder_transform   = ""
+            thread_transform   = ""
+            tag_transform      = ""
 
         fzf_cmd = [
             fzf_path,
@@ -650,39 +1966,87 @@ def main(
             "--layout=reverse",
             "--border=rounded",
             "--border-label= ✉ mailview ",
-            "--header-first",                    # 헤더를 목록 상단에 배치
+            "--header-first",
             "--prompt", "검색> ",
-            "--info=right",                      # 결과 수를 오른쪽 끝에 표시
+            "--info=right",
             "--pointer", "▶",
             "--scrollbar", "▌",
             "--padding", "0,1",
             # ── Catppuccin Mocha 색상 ────────────────────────────────────
-            "--color", _MOCHA_COLORS,
+            "--color", _FZF_COLORS,
+            # ── 멀티 선택 ────────────────────────────────────────────────
+            "--multi",
             # ── 목록 구성 ────────────────────────────────────────────────
             "--delimiter", "\t",
             "--with-nth", "1",
             "--header-lines", "1",
-            # 핵심 3개만 표기 — 나머지는 ? 팝업
-            "--header", "Enter:열람  Ctrl-B:본문검색  ?:도움말",
+            "--header", "Enter:열람  Tab:선택  Ctrl-B:검색강조  Ctrl-F:폴더  ?:도움말",
             # ── 미리보기 ─────────────────────────────────────────────────
             "--preview", preview_cmd,
             "--preview-window", "right:48%:border-left:wrap",
             "--preview-label", " 미리보기 ",
             # ── 키 바인딩 ────────────────────────────────────────────────
+            "--bind", "focus:change-preview-label( {2} )",
+            "--bind", "tab:toggle+down",
             "--bind", f"ctrl-o:execute({editor_cmd})+abort",
             "--bind", f"ctrl-a:execute({open_att_cmd})",
+            "--bind", f"ctrl-u:execute({open_url_cmd})",
+            "--bind", f"ctrl-k:execute({tag_cmd})+reload({reset_reload})",
+            "--bind", f"ctrl-d:execute({delete_cmd})+reload({reset_reload})",
+            "--bind", f"ctrl-x:execute({bulk_del_cmd})+reload({reset_reload})",
             "--bind", (
                 f"ctrl-b:change-prompt(본문검색> )"
                 f"+reload({body_reload})"
                 f"+clear-query"
+                f"+change-preview({search_preview_cmd})"
             ),
             "--bind", (
                 f"ctrl-r:change-prompt(검색> )"
                 f"+reload({reset_reload})"
                 f"+clear-query"
+                f"+change-preview({preview_cmd})"
             ),
+            "--bind", (
+                f"alt-s:change-prompt(제목순> )"
+                f"+reload({sort_subj_reload})"
+                f"+clear-query"
+            ),
+            "--bind", (
+                f"alt-f:change-prompt(발신자순> )"
+                f"+reload({sort_from_reload})"
+                f"+clear-query"
+            ),
+            "--bind", (
+                f"alt-1:change-prompt(오늘> )"
+                f"+reload({today_reload})"
+                f"+clear-query"
+            ),
+            "--bind", (
+                f"alt-2:change-prompt(7일> )"
+                f"+reload({week_reload})"
+                f"+clear-query"
+            ),
+            "--bind", (
+                f"alt-3:change-prompt(30일> )"
+                f"+reload({month_reload})"
+                f"+clear-query"
+            ),
+            "--bind", (
+                f"alt-4:change-prompt(1년> )"
+                f"+reload({year_reload})"
+                f"+clear-query"
+            ),
+            "--bind", f"alt-i:execute({stats_popup})",
             "--bind", f"?:execute({help_popup})",
         ]
+
+        # Ctrl-F / Ctrl-T / Alt-T: transform action 필요 (fzf 0.47+, Linux/WSL 전용)
+        if folder_transform:
+            fzf_cmd += ["--bind", f"ctrl-f:transform({folder_transform})"]
+        if thread_transform:
+            fzf_cmd += ["--bind", f"ctrl-t:transform({thread_transform})"]
+        if tag_transform:
+            fzf_cmd += ["--bind", f"alt-t:transform({tag_transform})"]
 
         if bat_cmd:
             fzf_cmd += ["--bind", f"ctrl-p:execute({bat_cmd})+abort"]
@@ -693,7 +2057,7 @@ def main(
             result = subprocess.run(
                 fzf_cmd,
                 stdin=stdin_fh,
-                capture_output=False,
+                stdout=subprocess.PIPE,   # 선택 항목 캡처 (fzf TUI 는 /dev/tty 직접 출력)
                 text=True,
                 encoding="utf-8",
             )
@@ -704,7 +2068,8 @@ def main(
             if "\t" in selected_line:
                 selected_path = selected_line.split("\t", 1)[1].strip()
                 if selected_path and Path(selected_path).exists():
-                    subprocess.run([glow_path, "-p", "-s", "dark", selected_path])
+                    glow_style = resolve_glow_style(cfg_glow_style)
+                    subprocess.run([glow_path, "-p", "-s", glow_style, selected_path])
 
     finally:
         Path(tmp_file.name).unlink(missing_ok=True)

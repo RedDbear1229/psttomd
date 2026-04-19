@@ -99,6 +99,34 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # True 이면 mailview 시작 시 새 MD 파일이 있을 때 인덱스를 자동 갱신한다.
         "auto_index": True,
     },
+    "llm": {
+        # LLM provider: openai | anthropic | ollama
+        "provider": "openai",
+        # API endpoint (ollama 의 경우 http://localhost:11434)
+        "endpoint": "https://api.openai.com/v1",
+        # API 토큰 (env LLM_TOKEN 이 우선)
+        "token": "",
+        # 사용할 모델 이름
+        "model": "gpt-4o-mini",
+        # 요청 타임아웃 (초)
+        "timeout": 60,
+        # 실패 시 최대 재시도 횟수
+        "max_retries": 3,
+        # 동시 LLM 호출 수
+        "concurrency": 4,
+        "scope": {
+            # 요약 최대 글자 수
+            "summary_max_chars": 300,
+            # 태그 최대 개수
+            "tag_max_count": 5,
+            # 관련 문서 최대 개수
+            "related_max_count": 5,
+            # 본문 길이가 이 값 미만이면 enrichment skip
+            "skip_body_shorter_than": 100,
+            # enrichment skip 할 폴더 이름 목록
+            "skip_folders": ["Junk", "Spam", "Deleted Items"],
+        },
+    },
 }
 
 
@@ -340,4 +368,65 @@ def init_config_file(
         )
 
     config_file.write_text(content, encoding="utf-8")
+    return config_file
+
+
+def llm_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """LLM 설정 dict 를 반환한다.
+
+    Args:
+        cfg: load_config() 결과. None 이면 내부에서 새로 로드한다.
+
+    Returns:
+        cfg["llm"] dict (DEFAULT_CONFIG["llm"] 와 병합된 값).
+    """
+    if cfg is None:
+        cfg = load_config()
+    return cfg.get("llm", copy.deepcopy(DEFAULT_CONFIG["llm"]))
+
+
+def save_llm_setting(key: str, value: str) -> Path:
+    """config.toml 의 [llm] 섹션 단일 키를 업데이트한다.
+
+    파일이 없으면 먼저 생성한다. [llm] 섹션이 없으면 파일 끝에 추가한다.
+    기존 주석은 보존하며, 해당 key = "..." 줄만 교체/추가한다.
+
+    Args:
+        key:   변경할 LLM 설정 키 (provider | endpoint | model | token | ...).
+        value: 새 값 (문자열).
+
+    Returns:
+        업데이트된 config.toml 경로.
+    """
+    config_file = Path.home() / ".pst2md" / "config.toml"
+    if not config_file.exists():
+        init_config_file()
+
+    original = config_file.read_text(encoding="utf-8")
+    normalized_value = str(value).replace("\\", "/")
+    new_line = f'{key} = "{normalized_value}"'
+
+    # [llm] 섹션 내 해당 key 줄 교체
+    llm_key_re = re.compile(
+        r"(\[llm\].*?)(\b" + re.escape(key) + r'\s*=\s*"[^"]*")',
+        re.DOTALL,
+    )
+    updated, count = llm_key_re.subn(
+        lambda m: m.group(1) + new_line,
+        original,
+        count=1,
+    )
+
+    if count == 0:
+        # key 줄 자체가 없지만 [llm] 섹션은 있을 수 있음 → 섹션 끝에 추가
+        llm_section_re = re.compile(r"(\[llm\][^\[]*)", re.DOTALL)
+        m = llm_section_re.search(updated)
+        if m:
+            insertion = m.group(1).rstrip() + f"\n{new_line}\n"
+            updated = updated[: m.start()] + insertion + updated[m.end():]
+        else:
+            # [llm] 섹션 자체가 없음 → 파일 끝에 섹션 추가
+            updated = original.rstrip() + f"\n\n[llm]\n{new_line}\n"
+
+    config_file.write_text(updated, encoding="utf-8")
     return config_file

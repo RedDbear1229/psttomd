@@ -20,6 +20,8 @@ pst2md/
 │   ├── pst2md.py            # PST → MD 변환 메인 (CID 교체, CAS, frontmatter)
 │   ├── build_index.py       # SQLite FTS5 인덱스 빌더 (증분 / 전체 재구축)
 │   ├── enrich.py            # Obsidian MOC 자동 생성 (people/threads/projects)
+│   ├── mailenrich.py        # LLM enrichment CLI (요약 / 태그 / 백링크)
+│   ├── mailenrich_config.py # mailenrich-config CLI (provider/endpoint/model/token)
 │   ├── mailgrep.py          # click CLI: FTS5 전문 검색
 │   ├── mailview.py          # click CLI: fzf + glow 인터랙티브 뷰어
 │   ├── mailstat.py          # click CLI: 아카이브 통계
@@ -30,7 +32,9 @@ pst2md/
 │   ├── mailstat             # bash 버전 (Linux 하위호환, 수정 금지)
 │   ├── archive_monthly.sh   # bash 버전 (Linux 하위호환, 수정 금지)
 │   └── lib/
-│       ├── config.py        # 설정 로더 + detect_platform() + archive_root()
+│       ├── config.py        # 설정 로더 + detect_platform() + archive_root() + llm_config()
+│       ├── md_io.py         # MD 파일 split/write (본문 바이트 불변 + 원자 쓰기)
+│       ├── llm_client.py    # LLM 어댑터 (OpenAI / Anthropic / Ollama)
 │       ├── pst_backend.py   # PST 파서 추상화 (pypff/readpst/win32com)
 │       ├── normalize.py     # RFC 2047 디코딩, 주소/날짜 정규화
 │       └── attachments.py   # SHA-256 CAS 첨부 저장 + magic bytes 확장자 추론
@@ -256,9 +260,76 @@ mailview "견적"
 # 통계
 mailstat summary
 
+# LLM enrichment (mailenrich)
+mailenrich-config show                  # 현재 LLM 설정 확인
+mailenrich-config set-provider ollama   # 로컬 무료 테스트
+mailenrich-config set-endpoint http://localhost:11434
+mailenrich-config set-model llama3.1:8b
+export LLM_TOKEN=sk-xxxxx              # 토큰 설정 (권장)
+mailenrich --dry-run                    # 예상 토큰/비용 확인
+mailenrich --limit 10                   # 10개 처리
+mailenrich --force --concurrency 8      # 강제 재실행
+
 # uv 환경(Linux/WSL/Windows)에서도 동일
 uv run pst2md --pst /path/to/archive.pst --dry-run
 ```
+
+---
+
+## mailenrich 아키텍처
+
+### MD 파일 구조 (4 개의 `---` 구분자)
+
+```
+---
+<frontmatter>          ← YAML (기존 키 + LLM 키: summary/llm_tags/related/llm_hash/...)
+---
+
+# 제목
+**보낸사람:** ...
+
+---
+
+<pristine body>        ← PST 추출 본문 (바이트 불변 — SHA-256 llm_hash 로 감시)
+
+---
+
+<!-- LLM-ENRICH:BEGIN -->
+## 요약 (LLM)
+...
+## 관련 문서 (LLM)
+- [[t_xxx]] — 이유
+<!-- LLM-ENRICH:END -->
+
+## 첨부 파일 (기존, 위치 보존)
+관련: [[t_xxx]]  (기존 footer, 위치 보존)
+```
+
+### lib/md_io.py — 핵심 불변식
+
+- `split(path)` → `MdParts(frontmatter, frontmatter_raw, head, body, llm_block, tail)`
+  - `rfind` 로 body 종료 구분자 탐색 → body 안의 `---` 수평선에 강건
+  - LLM 블록은 tail 에서 정규식 추출, split 시 제거
+- `write(path, fm_updates, llm_sections, original)` — 원자 쓰기
+  - tmp 파일 → `split(tmp)` 로 재파싱 → `assert body_before == body_after`
+  - `tmp.replace(path)` (atomic rename)
+  - 예외 발생 시 `tmp.unlink(missing_ok=True)`
+
+### lib/llm_client.py — 어댑터 패턴
+
+| Provider   | 강제 JSON 방식                        |
+|------------|--------------------------------------|
+| openai     | `response_format={"type":"json_object"}` |
+| anthropic  | tool-use (`tool_choice={"type":"tool","name":"enrich_mail"}`) |
+| ollama     | `format: "json"` 네이티브 파라미터    |
+
+토큰 우선순위: **env `LLM_TOKEN` > config.toml `[llm].token`**
+
+### 멱등성 / delta 감지
+
+`body_hash = sha256(parts.body.encode("utf-8")).hexdigest()`
+- frontmatter / LLM 블록 변경은 해시에 영향 없음
+- `parts.frontmatter.get("llm_hash") == body_hash` 이면 skip
 
 ---
 

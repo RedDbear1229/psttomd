@@ -81,3 +81,51 @@ glow_style = ""
 # mailview 시작 시 새 MD 파일이 있으면 인덱스를 자동으로 증분 갱신합니다.
 # 비활성화하려면 false 로 설정하세요.
 auto_index = true
+
+# ── mailenrich LLM 설정 ───────────────────────────────────────────────────
+[llm]
+
+# LLM provider: openai | anthropic | ollama
+# Ollama(로컬)는 토큰 불필요, 비용 0. 테스트용으로 권장.
+provider = "openai"
+
+# API 엔드포인트
+# openai:    https://api.openai.com/v1  (기본값)
+# anthropic: https://api.anthropic.com
+# ollama:    http://localhost:11434
+endpoint = "https://api.openai.com/v1"
+
+# 사용할 모델 이름
+# openai:    gpt-4o-mini (권장, 저비용) | gpt-4o
+# anthropic: claude-haiku-4-5-20251001 | claude-sonnet-4-6
+# ollama:    llama3.1:8b | mistral:7b
+model = "gpt-4o-mini"
+
+# API 토큰 (비워두면 환경변수 LLM_TOKEN 을 사용합니다 — 권장)
+# 보안 권고: 토큰을 이 파일에 저장할 경우 chmod 600 ~/.pst2md/config.toml
+token = ""
+
+# 요청 타임아웃 (초)
+timeout = 60
+
+# 실패 시 최대 재시도 횟수 (5xx / 429 / 타임아웃)
+max_retries = 3
+
+# 동시 LLM 호출 수 (CPU 코어 × 2 이하 권장)
+concurrency = 4
+
+[llm.scope]
+# 요약 최대 글자 수
+summary_max_chars = 300
+
+# 생성할 의미 태그 최대 개수
+tag_max_count = 5
+
+# 관련 문서 링크 최대 개수
+related_max_count = 5
+
+# 본문 길이가 이 값(바이트) 미만이면 enrichment 를 건너뜁니다
+skip_body_shorter_than = 100
+
+# 처리에서 제외할 폴더 이름 목록 (부분 일치)
+skip_folders = ["Junk", "Spam", "Deleted Items"]

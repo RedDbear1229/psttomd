@@ -385,6 +385,35 @@ def llm_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     return cfg.get("llm", copy.deepcopy(DEFAULT_CONFIG["llm"]))
 
 
+# ---------------------------------------------------------------------------
+# TOML 편집 헬퍼
+# ---------------------------------------------------------------------------
+
+def _toml_key_line(key: str, value: str) -> str:
+    """TOML key = "value" 줄을 생성한다. 역슬래시를 슬래시로 정규화한다."""
+    return f'{key} = "{str(value).replace(chr(92), "/")}"'
+
+
+def _replace_in_section(text: str, section: str, key: str, new_line: str) -> tuple[str, bool]:
+    """TOML 텍스트의 특정 섹션 내 key 줄을 교체한다.
+
+    Args:
+        text:     TOML 파일 전체 내용.
+        section:  섹션 이름 (예: "llm").
+        key:      교체할 키 이름.
+        new_line: 새 key = "value" 줄.
+
+    Returns:
+        (updated_text, replaced) — replaced 가 False 이면 key 줄이 없었음.
+    """
+    pattern = re.compile(
+        r"(\[" + re.escape(section) + r"\].*?)(\b" + re.escape(key) + r'\s*=\s*"[^"]*")',
+        re.DOTALL,
+    )
+    updated, count = pattern.subn(lambda m: m.group(1) + new_line, text, count=1)
+    return updated, count > 0
+
+
 def save_llm_setting(key: str, value: str) -> Path:
     """config.toml 의 [llm] 섹션 단일 키를 업데이트한다.
 
@@ -397,35 +426,27 @@ def save_llm_setting(key: str, value: str) -> Path:
 
     Returns:
         업데이트된 config.toml 경로.
+
+    Raises:
+        OSError: 파일 읽기/쓰기 실패.
     """
     config_file = Path.home() / ".pst2md" / "config.toml"
     if not config_file.exists():
         init_config_file()
 
     original = config_file.read_text(encoding="utf-8")
-    normalized_value = str(value).replace("\\", "/")
-    new_line = f'{key} = "{normalized_value}"'
+    new_line = _toml_key_line(key, value)
 
-    # [llm] 섹션 내 해당 key 줄 교체
-    llm_key_re = re.compile(
-        r"(\[llm\].*?)(\b" + re.escape(key) + r'\s*=\s*"[^"]*")',
-        re.DOTALL,
-    )
-    updated, count = llm_key_re.subn(
-        lambda m: m.group(1) + new_line,
-        original,
-        count=1,
-    )
+    updated, replaced = _replace_in_section(original, "llm", key, new_line)
 
-    if count == 0:
-        # key 줄 자체가 없지만 [llm] 섹션은 있을 수 있음 → 섹션 끝에 추가
-        llm_section_re = re.compile(r"(\[llm\][^\[]*)", re.DOTALL)
-        m = llm_section_re.search(updated)
+    if not replaced:
+        # key 줄 없음 — [llm] 섹션 끝에 추가하거나 섹션 자체를 신규 생성
+        section_re = re.compile(r"(\[llm\][^\[]*)", re.DOTALL)
+        m = section_re.search(updated)
         if m:
             insertion = m.group(1).rstrip() + f"\n{new_line}\n"
             updated = updated[: m.start()] + insertion + updated[m.end():]
         else:
-            # [llm] 섹션 자체가 없음 → 파일 끝에 섹션 추가
             updated = original.rstrip() + f"\n\n[llm]\n{new_line}\n"
 
     config_file.write_text(updated, encoding="utf-8")

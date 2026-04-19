@@ -26,7 +26,6 @@ from __future__ import annotations
 import json
 import logging
 import sys
-import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,30 +36,44 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent))
 from lib.config import archive_root, llm_config, load_config
-from lib.llm_client import LLMRequest, get_client
+from lib.llm_client import LLMClient, LLMRequest, LLMResponse, get_client
 from lib.md_io import MdParts, body_hash, split, write
 
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# 상수
+# ---------------------------------------------------------------------------
+
+_STATUS_OK = "ok"
+_STATUS_SKIPPED = "skipped"
+_STATUS_FAILED = "failed"
+
+# dry-run 시 사용하는 평균 토큰 추정값
+_DRY_RUN_INPUT_TOKENS = 800
+_DRY_RUN_OUTPUT_TOKENS = 250
+
+# 프롬프트 본문 최대 글자 수
+_MAX_BODY_CHARS = 3000
+
+# ---------------------------------------------------------------------------
 # 비용 추정 (provider 별 USD / token)
 # ---------------------------------------------------------------------------
 
-_COST_PER_TOKEN: dict[str, dict[str, float]] = {
-    "gpt-4o-mini": {"input": 0.15 / 1_000_000, "output": 0.60 / 1_000_000},
-    "gpt-4o":      {"input": 5.00 / 1_000_000, "output": 15.0 / 1_000_000},
-    "claude-haiku-4-5-20251001": {"input": 0.80 / 1_000_000, "output": 4.0 / 1_000_000},
-    "claude-sonnet-4-6": {"input": 3.00 / 1_000_000, "output": 15.0 / 1_000_000},
+_COST_PER_TOKEN: dict[str, tuple[float, float]] = {
+    # (input_per_token, output_per_token)
+    "gpt-4o-mini":               (0.15 / 1_000_000, 0.60 / 1_000_000),
+    "gpt-4o":                    (5.00 / 1_000_000, 15.0 / 1_000_000),
+    "claude-haiku-4-5-20251001": (0.80 / 1_000_000,  4.0 / 1_000_000),
+    "claude-sonnet-4-6":         (3.00 / 1_000_000, 15.0 / 1_000_000),
 }
-_DEFAULT_COST = {"input": 1.0 / 1_000_000, "output": 3.0 / 1_000_000}
-
-_AVG_INPUT_TOKENS = 800
-_AVG_OUTPUT_TOKENS = 250
+_DEFAULT_COST_RATES: tuple[float, float] = (1.0 / 1_000_000, 3.0 / 1_000_000)
 
 
 def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    rates = _COST_PER_TOKEN.get(model, _DEFAULT_COST)
-    return input_tokens * rates["input"] + output_tokens * rates["output"]
+    """모델별 단가로 USD 비용을 추정한다."""
+    in_rate, out_rate = _COST_PER_TOKEN.get(model, _DEFAULT_COST_RATES)
+    return input_tokens * in_rate + output_tokens * out_rate
 
 
 # ---------------------------------------------------------------------------
@@ -94,16 +107,15 @@ def _build_prompt(parts: MdParts, scope: dict[str, Any]) -> LLMRequest:
         f"날짜: {fm.get('date', '')}\n"
         f"폴더: {fm.get('folder', '')}\n"
     )
-    max_body = 3000
-    body_snippet = parts.body[:max_body]
-    if len(parts.body) > max_body:
+    body_snippet = parts.body[:_MAX_BODY_CHARS]
+    if len(parts.body) > _MAX_BODY_CHARS:
         body_snippet += "\n...(이하 생략)"
 
-    user_text = f"{header_block}\n---\n{body_snippet}"
+    summary_chars = scope.get("summary_max_chars", 300)
     return LLMRequest(
         system=_SYSTEM_PROMPT,
-        user=user_text,
-        max_tokens=scope.get("summary_max_chars", 300) + 300,
+        user=f"{header_block}\n---\n{body_snippet}",
+        max_tokens=summary_chars + 300,
         temperature=0.2,
     )
 
@@ -118,7 +130,7 @@ def _render_sections(parsed: dict[str, Any], scope: dict[str, Any]) -> str:
 
     summary = str(parsed.get("summary", "")).strip()
     if summary:
-        lines.append("## 요약 (LLM)\n")
+        lines.append("## 요약 (LLM)\n\n")
         lines.append(summary + "\n\n")
 
     tags = parsed.get("tags", [])
@@ -147,8 +159,6 @@ def _render_sections(parsed: dict[str, Any], scope: dict[str, Any]) -> str:
 
 def _iter_md_files(
     archive: Path,
-    since: str | None,
-    until: str | None,
     folders: tuple[str, ...],
     limit: int,
     skip_folders: list[str],
@@ -162,11 +172,8 @@ def _iter_md_files(
     for md_path in sorted(md_dir.rglob("*.md")):
         rel = str(md_path.relative_to(md_dir))
 
-        # --folder 필터
         if folders and not any(f.lower() in rel.lower() for f in folders):
             continue
-
-        # skip_folders 필터 (폴더 경로 포함 여부로 판단)
         if any(sf.lower() in rel.lower() for sf in skip_folders):
             continue
 
@@ -178,12 +185,61 @@ def _iter_md_files(
 
 
 # ---------------------------------------------------------------------------
+# LLM 호출 + JSON 파싱
+# ---------------------------------------------------------------------------
+
+def _call_llm(client: LLMClient, req: LLMRequest) -> tuple[LLMResponse, dict[str, Any]]:
+    """LLM 을 호출하고 JSON 을 파싱한다. 실패 시 1회 재시도.
+
+    Args:
+        client: LLMClient 인스턴스.
+        req:    LLMRequest.
+
+    Returns:
+        (LLMResponse, parsed_dict) 튜플.
+
+    Raises:
+        ValueError: JSON 파싱이 2회 모두 실패한 경우.
+        RuntimeError: LLM 호출 자체가 실패한 경우.
+    """
+    resp = client.complete(req)
+    try:
+        return resp, json.loads(resp.text)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # 1회 재시도
+    resp = client.complete(req)
+    try:
+        return resp, json.loads(resp.text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"JSON 파싱 2회 실패: {exc}") from exc
+
+
+def _build_fm_updates(
+    parsed: dict[str, Any],
+    resp: LLMResponse,
+    bh: str,
+) -> dict[str, Any]:
+    """LLM 파싱 결과를 frontmatter 업데이트 dict 로 변환한다."""
+    now_iso = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+    return {
+        "summary": str(parsed.get("summary", "")).strip(),
+        "llm_tags": parsed.get("tags", []),
+        "related": parsed.get("related", []),
+        "llm_hash": bh,
+        "llm_model": resp.model,
+        "llm_enriched_at": now_iso,
+    }
+
+
+# ---------------------------------------------------------------------------
 # 단일 파일 처리
 # ---------------------------------------------------------------------------
 
 def _process_one(
     md_path: Path,
-    client: Any,
+    client: LLMClient | None,
     scope: dict[str, Any],
     force: bool,
     dry_run: bool,
@@ -192,12 +248,11 @@ def _process_one(
     """단일 MD 파일을 enrichment 처리하고 결과 dict 를 반환한다.
 
     Returns:
-        status: "ok" | "skipped" | "failed"
-        + 비용 / 토큰 등 집계 필드
+        {"status": "ok"|"skipped"|"failed", "input_tokens": int, ...}
     """
     result: dict[str, Any] = {
         "path": str(md_path),
-        "status": "ok",
+        "status": _STATUS_OK,
         "input_tokens": 0,
         "output_tokens": 0,
         "cost_usd": 0.0,
@@ -208,57 +263,36 @@ def _process_one(
         parts = split(md_path)
         bh = body_hash(parts)
 
-        # 멱등성 체크
         if not force and parts.frontmatter.get("llm_hash") == bh:
-            result["status"] = "skipped"
+            result["status"] = _STATUS_SKIPPED
             return result
 
-        # body 길이 게이트
         if len(parts.body) < scope.get("skip_body_shorter_than", 100):
-            result["status"] = "skipped"
+            result["status"] = _STATUS_SKIPPED
             return result
 
         if dry_run:
-            result["input_tokens"] = _AVG_INPUT_TOKENS
-            result["output_tokens"] = _AVG_OUTPUT_TOKENS
-            result["cost_usd"] = _estimate_cost(model, _AVG_INPUT_TOKENS, _AVG_OUTPUT_TOKENS)
+            result["input_tokens"] = _DRY_RUN_INPUT_TOKENS
+            result["output_tokens"] = _DRY_RUN_OUTPUT_TOKENS
+            result["cost_usd"] = _estimate_cost(
+                model, _DRY_RUN_INPUT_TOKENS, _DRY_RUN_OUTPUT_TOKENS
+            )
             return result
 
+        assert client is not None
         req = _build_prompt(parts, scope)
-        resp = client.complete(req)
+        resp, parsed = _call_llm(client, req)
 
-        # JSON 파싱 (실패 시 1회 재시도)
-        parsed: dict[str, Any] = {}
-        try:
-            parsed = json.loads(resp.text)
-        except (json.JSONDecodeError, ValueError):
-            resp2 = client.complete(req)
-            try:
-                parsed = json.loads(resp2.text)
-                resp = resp2
-            except (json.JSONDecodeError, ValueError) as exc:
-                raise ValueError(f"JSON 파싱 2회 실패: {exc}") from exc
-
+        fm_updates = _build_fm_updates(parsed, resp, bh)
         llm_sections = _render_sections(parsed, scope)
-        now_iso = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
-
-        fm_updates: dict[str, Any] = {
-            "summary": str(parsed.get("summary", "")).strip(),
-            "llm_tags": parsed.get("tags", []),
-            "related": parsed.get("related", []),
-            "llm_hash": bh,
-            "llm_model": resp.model,
-            "llm_enriched_at": now_iso,
-        }
-
         write(md_path, fm_updates, llm_sections, parts)
 
         result["input_tokens"] = resp.input_tokens
         result["output_tokens"] = resp.output_tokens
         result["cost_usd"] = _estimate_cost(resp.model, resp.input_tokens, resp.output_tokens)
 
-    except Exception as exc:  # noqa: BLE001 — skip + log, don't abort pipeline
-        result["status"] = "failed"
+    except (OSError, ValueError, RuntimeError, KeyError) as exc:
+        result["status"] = _STATUS_FAILED
         result["error"] = str(exc)
         log.warning("enrichment 실패 [%s]: %s", md_path.name, exc)
 
@@ -284,8 +318,8 @@ def _append_log(log_path: Path, entry: dict[str, Any]) -> None:
 
 @click.command()
 @click.option("--archive", "archive_path", default="", help="아카이브 루트 경로")
-@click.option("--since", default="", help="시작 날짜 필터 (YYYY-MM-DD)")
-@click.option("--until", default="", help="종료 날짜 필터 (YYYY-MM-DD)")
+@click.option("--since", default="", help="시작 날짜 필터 (YYYY-MM-DD, 현재 미구현)")
+@click.option("--until", default="", help="종료 날짜 필터 (YYYY-MM-DD, 현재 미구현)")
 @click.option("--limit", default=0, type=int, help="처리 상한 (0=무제한)")
 @click.option("--dry-run", is_flag=True, default=False, help="LLM 호출 없이 예상 토큰/비용만 출력")
 @click.option("--force", is_flag=True, default=False, help="llm_hash 무시하고 강제 재실행")
@@ -326,11 +360,7 @@ def main(
     llm_cfg = llm_config(cfg)
     scope = llm_cfg.get("scope", {})
 
-    if archive_path:
-        root = Path(archive_path).expanduser()
-    else:
-        root = archive_root(cfg)
-
+    root = Path(archive_path).expanduser() if archive_path else archive_root(cfg)
     if not root.exists():
         click.echo(f"아카이브 없음: {root}", err=True)
         sys.exit(1)
@@ -339,8 +369,7 @@ def main(
     concurrency = concurrency or llm_cfg.get("concurrency", 4)
     skip_folders: list[str] = scope.get("skip_folders", [])
 
-    # 클라이언트 (dry-run 시 생성 안 함)
-    client = None
+    client: LLMClient | None = None
     if not dry_run:
         try:
             client = get_client(cfg)
@@ -348,21 +377,21 @@ def main(
             click.echo(f"LLM 클라이언트 초기화 실패: {exc}", err=True)
             sys.exit(1)
 
-    # 파일 목록 수집
-    md_files = _iter_md_files(root, since, until, folders, limit, skip_folders)
+    md_files = _iter_md_files(root, folders, limit, skip_folders)
     if not md_files:
         click.echo("처리할 MD 파일이 없습니다.")
         return
 
-    click.echo(f"{'[DRY-RUN] ' if dry_run else ''}대상 파일: {len(md_files)}개  "
-               f"| 아카이브: {root}  | 모델: {model}")
+    click.echo(
+        f"{'[DRY-RUN] ' if dry_run else ''}대상 파일: {len(md_files)}개  "
+        f"| 아카이브: {root}  | 모델: {model}"
+    )
 
     log_path = root / ".mailenrich.log.jsonl"
-
-    # 집계
     n_ok = n_skipped = n_failed = 0
     total_input_tokens = total_output_tokens = 0
     total_cost = 0.0
+    budget_exceeded = False
 
     def _worker(md_path: Path) -> dict[str, Any]:
         return _process_one(md_path, client, scope, force, dry_run, model)
@@ -374,9 +403,10 @@ def main(
                 res = future.result()
                 pbar.update(1)
 
-                if res["status"] == "ok":
+                status = res["status"]
+                if status == _STATUS_OK:
                     n_ok += 1
-                elif res["status"] == "skipped":
+                elif status == _STATUS_SKIPPED:
                     n_skipped += 1
                 else:
                     n_failed += 1
@@ -388,15 +418,17 @@ def main(
                 if not dry_run:
                     _append_log(log_path, res)
 
+                if verbose and status == _STATUS_FAILED:
+                    click.echo(
+                        f"  FAIL {Path(res['path']).name}: {res['error']}", err=True
+                    )
+
                 if budget_usd > 0 and total_cost >= budget_usd:
                     click.echo(f"\n예산 한도 ${budget_usd:.2f} 초과 — 중단합니다.")
+                    budget_exceeded = True
                     executor.shutdown(wait=False, cancel_futures=True)
                     break
 
-                if verbose and res["status"] == "failed":
-                    click.echo(f"  FAIL {Path(res['path']).name}: {res['error']}", err=True)
-
-    # 최종 통계
     click.echo()
     if dry_run:
         click.echo(

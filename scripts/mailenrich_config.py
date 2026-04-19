@@ -15,6 +15,7 @@ mailenrich-config — LLM 설정 관리 CLI
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -27,6 +28,38 @@ from lib.config import (
     load_config,
     save_llm_setting,
 )
+
+# [llm] + [llm.scope] 기본 섹션 템플릿
+_LLM_SECTION_TEMPLATE = """\
+
+[llm]
+# LLM provider: openai | anthropic | ollama
+provider = "openai"
+# API endpoint (ollama: http://localhost:11434)
+endpoint = "https://api.openai.com/v1"
+# 모델 이름
+model = "gpt-4o-mini"
+# API 토큰 (env LLM_TOKEN 이 우선)
+token = ""
+timeout = 60
+max_retries = 3
+concurrency = 4
+
+[llm.scope]
+summary_max_chars = 300
+tag_max_count = 5
+related_max_count = 5
+skip_body_shorter_than = 100
+skip_folders = ["Junk", "Spam", "Deleted Items"]
+"""
+
+# 기존 [llm] 섹션 전체를 제거하는 패턴 (다음 최상위 섹션 직전까지)
+_LLM_SECTION_RE = re.compile(r"\n\[llm[^\[]*", re.DOTALL)
+
+
+def _mask_token(token: str) -> str:
+    """토큰 앞 4자만 노출하고 나머지를 마스킹한다."""
+    return token[:4] + "****" if len(token) > 4 else "****"
 
 
 @click.group()
@@ -52,16 +85,15 @@ def cmd_show() -> None:
     click.echo(f"  endpoint    = {llm.get('endpoint', '')}")
     click.echo(f"  model       = {llm.get('model', '')}")
 
-    # 토큰 마스킹: env 우선 표시
     env_token = os.environ.get("LLM_TOKEN", "").strip()
     cfg_token = llm.get("token", "")
     if env_token:
-        masked = env_token[:4] + "****  (env LLM_TOKEN)"
+        token_display = _mask_token(env_token) + "  (env LLM_TOKEN)"
     elif cfg_token:
-        masked = cfg_token[:4] + "****"
+        token_display = _mask_token(cfg_token)
     else:
-        masked = "(없음 — env LLM_TOKEN 또는 set-token 으로 설정)"
-    click.echo(f"  token       = {masked}")
+        token_display = "(없음 — env LLM_TOKEN 또는 set-token 으로 설정)"
+    click.echo(f"  token       = {token_display}")
 
     click.echo(f"  timeout     = {llm.get('timeout', 60)}")
     click.echo(f"  max_retries = {llm.get('max_retries', 3)}")
@@ -75,8 +107,7 @@ def cmd_show() -> None:
         click.echo(f"  tag_max_count          = {scope.get('tag_max_count', 5)}")
         click.echo(f"  related_max_count      = {scope.get('related_max_count', 5)}")
         click.echo(f"  skip_body_shorter_than = {scope.get('skip_body_shorter_than', 100)}")
-        skip_folders = scope.get("skip_folders", [])
-        click.echo(f"  skip_folders           = {skip_folders}")
+        click.echo(f"  skip_folders           = {scope.get('skip_folders', [])}")
 
 
 @main.command("set-provider")
@@ -132,8 +163,7 @@ def cmd_set_token(token: str) -> None:
         mailenrich-config set-token sk-xxxxx   # 대안
     """
     saved = save_llm_setting("token", token)
-    masked = token[:4] + "****" if len(token) > 4 else "****"
-    click.echo(f"token = {masked} 저장 완료: {saved}")
+    click.echo(f"token = {_mask_token(token)} 저장 완료: {saved}")
     click.echo("  보안 권고: chmod 600 ~/.pst2md/config.toml")
 
 
@@ -152,56 +182,27 @@ def cmd_init(force: bool) -> None:
     if not config_file.exists():
         result = init_config_file()
         click.echo(f"config.toml 을 생성했습니다: {result}")
-    else:
-        text = config_file.read_text(encoding="utf-8")
-        if "[llm]" in text and not force:
-            click.echo("[llm] 섹션이 이미 존재합니다.")
-            click.echo("재설정하려면 --force 를 사용하세요.")
-            return
-        _append_llm_section(config_file, force)
-        click.echo(f"[llm] 섹션을 추가했습니다: {config_file}")
+        return
+
+    text = config_file.read_text(encoding="utf-8")
+    if "[llm]" in text and not force:
+        click.echo("[llm] 섹션이 이미 존재합니다.")
+        click.echo("재설정하려면 --force 를 사용하세요.")
+        return
+
+    _append_llm_section(config_file, force)
+    click.echo(f"[llm] 섹션을 추가했습니다: {config_file}")
 
 
 def _append_llm_section(config_file: Path, force: bool) -> None:
     """config.toml 에 기본 [llm] 섹션을 추가하거나 교체한다."""
-    import re
-
-    llm_template = (
-        "\n"
-        "[llm]\n"
-        "# LLM provider: openai | anthropic | ollama\n"
-        'provider = "openai"\n'
-        "# API endpoint (ollama: http://localhost:11434)\n"
-        'endpoint = "https://api.openai.com/v1"\n'
-        "# 모델 이름\n"
-        'model = "gpt-4o-mini"\n'
-        "# API 토큰 (env LLM_TOKEN 이 우선)\n"
-        'token = ""\n'
-        "timeout = 60\n"
-        "max_retries = 3\n"
-        "concurrency = 4\n"
-        "\n"
-        "[llm.scope]\n"
-        "summary_max_chars = 300\n"
-        "tag_max_count = 5\n"
-        "related_max_count = 5\n"
-        "skip_body_shorter_than = 100\n"
-        'skip_folders = ["Junk", "Spam", "Deleted Items"]\n'
-    )
-
     original = config_file.read_text(encoding="utf-8")
 
     if force and "[llm]" in original:
-        # 기존 [llm] 섹션 제거 후 재추가
-        cleaned = re.sub(
-            r"\n\[llm[^\[]*",
-            "",
-            original,
-            flags=re.DOTALL,
-        )
-        updated = cleaned.rstrip() + llm_template
+        cleaned = _LLM_SECTION_RE.sub("", original)
+        updated = cleaned.rstrip() + _LLM_SECTION_TEMPLATE
     else:
-        updated = original.rstrip() + llm_template
+        updated = original.rstrip() + _LLM_SECTION_TEMPLATE
 
     config_file.write_text(updated, encoding="utf-8")
 

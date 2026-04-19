@@ -47,6 +47,8 @@ from typing import Any
 # 상수
 # ---------------------------------------------------------------------------
 
+_ENCODING = "utf-8"
+
 #: frontmatter 종료 구분자 — "...last_key_value\n---\n\n"
 _FM_END = "\n---\n\n"
 
@@ -68,6 +70,12 @@ _LLM_KEYS = frozenset({
     "llm_model",
     "llm_hash",
 })
+
+#: JSON 배열로 파싱할 frontmatter 키
+_JSON_ARRAY_KEYS = frozenset({"to", "cc", "references", "tags", "llm_tags"})
+
+#: JSON (임의 타입)으로 파싱할 frontmatter 키
+_JSON_ANY_KEYS = frozenset({"related"})
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +122,7 @@ def split(path: Path) -> MdParts:
         ValueError: frontmatter 또는 본문 구분자를 찾지 못한 경우.
         OSError: 파일 읽기 실패.
     """
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding=_ENCODING)
 
     if not text.startswith("---\n"):
         raise ValueError(f"YAML frontmatter 없음: {path}")
@@ -170,7 +178,7 @@ def body_hash(parts: MdParts) -> str:
     Returns:
         64 자 hex 문자열.
     """
-    return hashlib.sha256(parts.body.encode("utf-8")).hexdigest()
+    return hashlib.sha256(parts.body.encode(_ENCODING)).hexdigest()
 
 
 def write(
@@ -210,7 +218,7 @@ def write(
 
     tmp = path.with_suffix(".tmp")
     try:
-        tmp.write_text(new_text, encoding="utf-8")
+        tmp.write_text(new_text, encoding=_ENCODING)
 
         # body 바이트 불변성 검증
         new_parts = split(tmp)
@@ -231,6 +239,24 @@ def write(
 # 내부 헬퍼
 # ---------------------------------------------------------------------------
 
+def _parse_json_field(val: str, array: bool) -> Any:
+    """frontmatter 값 문자열을 JSON 으로 파싱한다.
+
+    Args:
+        val:   strip 된 값 문자열.
+        array: True 이면 배열 기대 (비어 있으면 [] 반환).
+
+    Returns:
+        파싱된 값. 실패 시 [] 또는 None.
+    """
+    try:
+        if array:
+            return json.loads(val) if val.startswith("[") else []
+        return json.loads(val)
+    except (json.JSONDecodeError, ValueError):
+        return [] if array else None
+
+
 def _parse_frontmatter(fm_raw: str) -> dict[str, Any]:
     """frontmatter 원문을 loose 파싱한다.
 
@@ -243,30 +269,19 @@ def _parse_frontmatter(fm_raw: str) -> dict[str, Any]:
     Returns:
         키-값 dict. JSON 배열 필드는 list 로 변환.
     """
-    _JSON_ARRAY_KEYS = frozenset({"to", "cc", "references", "tags", "llm_tags"})
-    _JSON_ANY_KEYS = frozenset({"related"})
-
     meta: dict[str, Any] = {}
     for line in fm_raw.splitlines():
-        # 들여쓰기 줄(블록 리스트) 무시
-        if not line or line[0].isspace():
-            continue
-        if ":" not in line:
+        if not line or line[0].isspace() or ":" not in line:
             continue
         key, _, val = line.partition(":")
         key = key.strip()
         val = val.strip().strip('"').strip("'")
 
         if key in _JSON_ARRAY_KEYS:
-            try:
-                meta[key] = json.loads(val) if val.startswith("[") else []
-            except (json.JSONDecodeError, ValueError):
-                meta[key] = []
+            meta[key] = _parse_json_field(val, array=True)
         elif key in _JSON_ANY_KEYS:
-            try:
-                meta[key] = json.loads(val)
-            except (json.JSONDecodeError, ValueError):
-                meta[key] = []
+            parsed = _parse_json_field(val, array=False)
+            meta[key] = parsed if parsed is not None else []
         else:
             meta[key] = val
 

@@ -180,7 +180,7 @@ def html_to_md(html: str) -> str:
     """
     try:
         return _h2t.handle(_preprocess_html(html)).strip()
-    except Exception as e:
+    except (AttributeError, TypeError, ValueError, UnicodeError, RecursionError) as e:
         log.warning("HTML 변환 실패: %s", e)
         return re.sub(r"<[^>]+>", "", html).strip()
 
@@ -577,7 +577,9 @@ def message_to_md(
                 elif att_data:
                     # dry_run: 파일 저장 없이 이름·크기만 기록
                     attachment_metas.append({"name": att_name, "size": len(att_data)})
-            except Exception as e:
+            except (OSError, ValueError, AttributeError, TypeError, UnicodeError) as e:
+                # libpff C 레이어 / store_attachment / MIME 디코딩에서 발생 가능한 예외.
+                # 단일 첨부 실패는 다음 첨부로 진행.
                 log.warning("첨부 추출 실패 [%s]: %s", subject, e)
 
         # ── CID 인라인 이미지 → 로컬 상대 경로 교체 ──────────────────────
@@ -696,7 +698,12 @@ def message_to_md(
 
         return meta
 
-    except Exception as e:
+    except (
+        OSError, ValueError, RuntimeError, AttributeError, TypeError,
+        UnicodeError, KeyError, LookupError,
+    ) as e:
+        # 단일 메시지 변환 실패는 배치를 중단시키지 않고 None 반환.
+        # pypff C 래퍼, mail-parser, 파일 I/O, 인코딩, dict 키 조회 등을 포괄.
         log.error("변환 실패: %s", e, exc_info=True)
         return None
 

@@ -217,6 +217,7 @@ def write(
     )
 
     tmp = path.with_suffix(".tmp")
+    committed = False
     try:
         tmp.write_text(new_text, encoding=_ENCODING)
 
@@ -230,9 +231,10 @@ def write(
             )
 
         tmp.replace(path)
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
+        committed = True
+    finally:
+        if not committed:
+            tmp.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

@@ -353,7 +353,8 @@ def get_label(path: str, db: Path) -> str:
                 f"{att_prefix}"
                 f"{subject}"
             )
-    except Exception:
+    except (sqlite3.Error, TypeError, ValueError, UnicodeError):
+        # DB 미생성 / 스키마 불일치 / 컬럼 값 형식 오류 — fzf 표시만 대체.
         pass
     return path
 
@@ -561,7 +562,8 @@ def open_file(path: str, plat: str) -> None:
                 ["xdg-open", path],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError, UnicodeError) as e:
+        # 실행 파일 없음 / 권한 / wslpath 실패 / 인코딩 문제 등.
         click.echo(f"파일 열기 실패: {e}", err=True)
 
 

@@ -250,3 +250,49 @@ class TestSkipConditions:
             _run_mailenrich(arch)
 
         assert mock_client.complete.call_count == 0
+
+
+class TestDateFilter:
+    def test_parse_date_filter_valid(self) -> None:
+        from scripts.mailenrich import _parse_date_filter
+
+        assert _parse_date_filter("", "--since") is None
+        assert _parse_date_filter("2024-03-15", "--since") == (2024, 3, 15)
+
+    def test_parse_date_filter_rejects_bad_format(self) -> None:
+        import click
+        from scripts.mailenrich import _parse_date_filter
+
+        with pytest.raises(click.BadParameter):
+            _parse_date_filter("2024/03/15", "--since")
+        with pytest.raises(click.BadParameter):
+            _parse_date_filter("not-a-date", "--since")
+
+    def test_path_date_extraction(self) -> None:
+        from scripts.mailenrich import _path_date
+
+        assert _path_date(Path("2024/03/15/m.md")) == (2024, 3, 15)
+        assert _path_date(Path("undated/m.md")) is None
+        assert _path_date(Path("abc/03/15/m.md")) is None
+
+    def test_since_until_filter(self, tmp_path: Path) -> None:
+        """date 필터로 대상 파일이 좁혀진다."""
+        from scripts.mailenrich import _iter_md_files
+
+        archive = tmp_path / "archive"
+        for day in ("2024/01/05", "2024/03/20", "2024/06/10", "undated"):
+            d = archive / day
+            d.mkdir(parents=True)
+            (d / "mail.md").write_text("x", encoding="utf-8")
+
+        all_files = _iter_md_files(tmp_path, (), 0, [], None, None)
+        assert len(all_files) == 4  # undated 포함
+
+        since_only = _iter_md_files(tmp_path, (), 0, [], (2024, 3, 1), None)
+        # undated 는 날짜 필터 적용 시 제외
+        assert len(since_only) == 2
+        assert all("2024/01" not in str(p) and "undated" not in str(p) for p in since_only)
+
+        windowed = _iter_md_files(tmp_path, (), 0, [], (2024, 2, 1), (2024, 5, 31))
+        assert len(windowed) == 1
+        assert "2024/03/20" in str(windowed[0]).replace("\\", "/")

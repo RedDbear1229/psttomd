@@ -14,6 +14,7 @@ mailenrich 가 사용하는 LLM 호출 추상화 레이어.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -122,14 +123,16 @@ def _backoff(attempt: int) -> None:
 def _build_httpx_client(cfg: dict[str, Any]) -> Any:
     """httpx.Client 를 반환한다. httpx 는 선택적 의존성이므로 임포트 시 확인."""
     if _httpx is None:
-        raise ImportError("httpx 가 설치되어 있지 않습니다. pip install httpx")
+        raise ImportError(
+            "httpx 가 설치되어 있지 않습니다. "
+            "pip install httpx  또는  pip install -e '.[mailenrich]'"
+        )
     timeout = cfg.get("llm", {}).get("timeout", 60)
     return _httpx.Client(timeout=timeout)
 
 
 def _resolve_token(llm_cfg: dict[str, Any]) -> str:
     """LLM_TOKEN env → config token 순으로 토큰을 반환한다."""
-    import os
     env = os.environ.get("LLM_TOKEN", "").strip()
     return env if env else llm_cfg.get("token", "")
 

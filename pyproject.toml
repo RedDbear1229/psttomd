@@ -13,7 +13,6 @@ dependencies = [
     "chardet>=5.2",
     "click>=8.1",
     "tomli>=2.0; python_version<'3.11'",  # Python 3.11 미만에서 tomllib 대체
-    "httpx>=0.27",                         # mailenrich LLM HTTP 클라이언트
 ]
 
 [project.optional-dependencies]
@@ -24,6 +23,10 @@ linux = [
 # Windows Native: Outlook COM API
 win32 = [
     "pywin32",
+]
+# LLM enrichment: httpx HTTP 클라이언트 (mailenrich 사용 시에만 필요)
+mailenrich = [
+    "httpx>=0.27",
 ]
 
 [project.scripts]

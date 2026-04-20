@@ -841,28 +841,33 @@ archive-monthly --pst <경로> [옵션]
 #### 기본 사용법
 
 ```bash
-# 현재 설정 출력
+# 현재 설정 출력 (archive / pst_backend / tools / mailview / win32com)
 pst2md-config show
 
 # 출력(아카이브) 루트 경로 설정
 pst2md-config set-output ~/mail-archive
 pst2md-config set-output "C:/Users/YOU/mail-archive"   # Windows
 
+# fzf preview 뷰어 전환 (glow ↔ mdcat)
+pst2md-config set glow                 # 기본. 컬러 마크다운, 이미지는 링크
+pst2md-config set mdcat                # Kitty/WezTerm/sixel 터미널에서 이미지 인라인
+
 # 설정 파일 없을 때 기본 템플릿 생성
 pst2md-config init
 pst2md-config init --force                             # 기존 덮어쓰기
 
 # 초기화 시 옵션 지정
-pst2md-config init --archive ~/mail-archive --backend pypff
+pst2md-config init --output ~/mail-archive --backend pypff
 ```
 
 #### 하위 명령 전체
 
 | 명령 | 설명 |
 |---|---|
-| `show` | 현재 config 전체 및 실제 적용값 확인 (archive.root, pst_backend, tools.*) |
-| `set-output PATH` | `archive.root` 를 업데이트. `~` 자동 확장, 디렉터리 자동 생성 |
-| `init` | `~/.pst2md/config.toml` 이 없으면 example 을 복사. `--force` 로 덮어쓰기 |
+| `show` | 현재 config 전체 및 실제 적용값 확인 (archive.root, pst_backend, tools.\*, mailview.\*) |
+| `set-output PATH` | `archive.root` 를 업데이트. `~` 자동 확장 |
+| `set glow\|mdcat` | `mailview.preview_viewer` 를 업데이트. mdcat 이 PATH 에 없으면 경고 |
+| `init` | `~/.pst2md/config.toml` 이 없으면 기본 템플릿 생성. `--force` 로 덮어쓰기 |
 
 #### pst2md 변환 시 함께 저장하기
 
@@ -879,11 +884,15 @@ pst2md --pst /path/to/archive2.pst
 
 #### 설정 파일 위치
 
+모든 설정은 단일 파일에 모입니다 (archive / pst_backend / tools / mailview / llm / win32com):
+
 | 플랫폼 | 경로 |
 |---|---|
-| Linux/WSL | `~/.pst2md/config.toml` |
-| Windows   | `%USERPROFILE%\.pst2md\config.toml` |
-| 오버라이드 | `PST2MD_CONFIG` 환경변수로 경로 직접 지정 가능 |
+| Linux/WSL/Android | `~/.pst2md/config.toml` |
+| Windows           | `%USERPROFILE%\.pst2md\config.toml` |
+
+> 코드 레벨에서는 `scripts/lib/config.py` 의 `config_file_path()` 헬퍼가 단일
+> 진실 원천이므로, 경로 변경이나 테스트 격리 시 한 곳만 수정하면 됩니다.
 
 ---
 

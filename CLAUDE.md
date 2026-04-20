@@ -254,9 +254,11 @@ pst2md --pst tests/data/test.pst --out ~/mail-archive --no-index
 # 출력 경로 config.toml 에 영구 저장
 pst2md --pst /path/to/archive.pst --save-out
 
-# 설정 확인 / 변경
+# 설정 확인 / 변경 (모든 설정은 ~/.pst2md/config.toml 에 통합 — 분산 없음)
 pst2md-config show
 pst2md-config set-output ~/mail-archive
+pst2md-config set glow                # fzf preview 기본 뷰어
+pst2md-config set mdcat               # Kitty/WezTerm/sixel 터미널에서 이미지 인라인
 pst2md-config init --force
 
 # 인덱스 재구축

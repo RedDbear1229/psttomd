@@ -161,6 +161,15 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 # 공개 API
 # ---------------------------------------------------------------------------
 
+def config_file_path() -> Path:
+    """설정 파일 경로(~/.pst2md/config.toml) 를 반환한다.
+
+    모든 스크립트가 이 함수를 호출해 동일 경로를 얻도록 통일한다.
+    테스트·경로 변경 시 한 곳만 수정하면 된다.
+    """
+    return Path.home() / ".pst2md" / "config.toml"
+
+
 def load_config() -> dict[str, Any]:
     """설정 파일을 읽어 기본값과 병합한 dict를 반환한다.
 
@@ -174,7 +183,7 @@ def load_config() -> dict[str, Any]:
     """
     cfg: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
 
-    config_path = Path.home() / ".pst2md" / "config.toml"
+    config_path = config_file_path()
     if config_path.exists():
         if tomllib is None:
             # tomllib/tomli 미설치 시 경고만 출력하고 기본값으로 계속 진행
@@ -266,7 +275,7 @@ def save_archive_root(path: str | Path) -> Path:
     Returns:
         업데이트된 config.toml 파일 경로.
     """
-    config_file = Path.home() / ".pst2md" / "config.toml"
+    config_file = config_file_path()
     normalized = str(path).replace("\\", "/")
 
     if not config_file.exists():
@@ -315,9 +324,8 @@ def init_config_file(
     Returns:
         생성된(또는 기존) config.toml 경로
     """
-    config_dir = Path.home() / ".pst2md"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_file = config_dir / "config.toml"
+    config_file = config_file_path()
+    config_file.parent.mkdir(parents=True, exist_ok=True)
 
     if config_file.exists() and not force:
         return config_file
@@ -430,24 +438,42 @@ def save_llm_setting(key: str, value: str) -> Path:
     Raises:
         OSError: 파일 읽기/쓰기 실패.
     """
-    config_file = Path.home() / ".pst2md" / "config.toml"
+    return save_setting("llm", key, value)
+
+
+def save_setting(section: str, key: str, value: str) -> Path:
+    """config.toml 의 임의 섹션 단일 키를 업데이트한다.
+
+    파일이 없으면 먼저 생성한다. 섹션이 없으면 파일 끝에 추가한다.
+    기존 주석은 보존하며, 해당 key = "..." 줄만 교체/추가한다.
+
+    Args:
+        section: TOML 섹션 이름 (예: "mailview", "llm", "archive").
+        key:     변경할 키 이름.
+        value:   새 값 (문자열).
+
+    Returns:
+        업데이트된 config.toml 경로.
+    """
+    config_file = config_file_path()
     if not config_file.exists():
         init_config_file()
 
     original = config_file.read_text(encoding="utf-8")
     new_line = _toml_key_line(key, value)
 
-    updated, replaced = _replace_in_section(original, "llm", key, new_line)
+    updated, replaced = _replace_in_section(original, section, key, new_line)
 
     if not replaced:
-        # key 줄 없음 — [llm] 섹션 끝에 추가하거나 섹션 자체를 신규 생성
-        section_re = re.compile(r"(\[llm\][^\[]*)", re.DOTALL)
+        section_re = re.compile(
+            r"(\[" + re.escape(section) + r"\][^\[]*)", re.DOTALL
+        )
         m = section_re.search(updated)
         if m:
             insertion = m.group(1).rstrip() + f"\n{new_line}\n"
             updated = updated[: m.start()] + insertion + updated[m.end():]
         else:
-            updated = original.rstrip() + f"\n\n[llm]\n{new_line}\n"
+            updated = original.rstrip() + f"\n\n[{section}]\n{new_line}\n"
 
     config_file.write_text(updated, encoding="utf-8")
     return config_file

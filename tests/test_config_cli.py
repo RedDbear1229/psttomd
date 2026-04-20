@@ -115,3 +115,79 @@ class TestCmdInit:
     def test_init_success_message(self, runner, isolated):
         result = runner.invoke(main, ["init"])
         assert "생성" in result.output
+
+
+# ---------------------------------------------------------------------------
+# set (preview_viewer) 커맨드
+# ---------------------------------------------------------------------------
+
+class TestCmdSetViewer:
+    def test_set_glow_exits_zero(self, runner, isolated):
+        result = runner.invoke(main, ["set", "glow"])
+        assert result.exit_code == 0
+
+    def test_set_glow_writes_config(self, runner, isolated):
+        runner.invoke(main, ["set", "glow"])
+        text = (isolated / ".pst2md" / "config.toml").read_text(encoding="utf-8")
+        assert 'preview_viewer = "glow"' in text
+
+    def test_set_mdcat_writes_config(self, runner, isolated, monkeypatch):
+        # mdcat 이 PATH 에 있는 척 — 경고 없이 저장만 검증
+        import shutil as _sh
+        monkeypatch.setattr(_sh, "which", lambda _: "/usr/bin/mdcat")
+        # config_cli 모듈이 import 한 shutil 도 패치
+        import config_cli as _cc
+        monkeypatch.setattr(_cc.shutil, "which", lambda _: "/usr/bin/mdcat")
+        result = runner.invoke(main, ["set", "mdcat"])
+        assert result.exit_code == 0
+        text = (isolated / ".pst2md" / "config.toml").read_text(encoding="utf-8")
+        assert 'preview_viewer = "mdcat"' in text
+
+    def test_set_mdcat_warns_when_missing(self, runner, isolated, monkeypatch):
+        import config_cli as _cc
+        monkeypatch.setattr(_cc.shutil, "which", lambda _: None)
+        result = runner.invoke(main, ["set", "mdcat"])
+        assert result.exit_code == 0
+        # click.echo(err=True) 로 전달된 경고는 runner.output 에 포함된다
+        assert "mdcat" in result.output
+        assert "경고" in result.output or "warn" in result.output.lower()
+
+    def test_set_invalid_viewer_rejected(self, runner, isolated):
+        result = runner.invoke(main, ["set", "bat"])
+        assert result.exit_code != 0
+
+    def test_set_replaces_existing_value(self, runner, isolated):
+        # 먼저 glow 로 저장한 뒤 mdcat 으로 덮어써도 한 줄만 남아야 함
+        import config_cli as _cc
+        from unittest.mock import patch as _patch
+        with _patch.object(_cc.shutil, "which", return_value="/usr/bin/mdcat"):
+            runner.invoke(main, ["set", "glow"])
+            runner.invoke(main, ["set", "mdcat"])
+        text = (isolated / ".pst2md" / "config.toml").read_text(encoding="utf-8")
+        assert text.count('preview_viewer') == 1
+        assert 'preview_viewer = "mdcat"' in text
+
+
+# ---------------------------------------------------------------------------
+# config_file_path 헬퍼
+# ---------------------------------------------------------------------------
+
+class TestConfigFilePath:
+    def test_returns_home_pst2md_config(self, isolated):
+        from lib.config import config_file_path
+        p = config_file_path()
+        assert p == isolated / ".pst2md" / "config.toml"
+
+    def test_save_setting_generic(self, isolated):
+        from lib.config import save_setting, load_config
+        save_setting("mailview", "preview_viewer", "mdcat")
+        cfg = load_config()
+        assert cfg["mailview"]["preview_viewer"] == "mdcat"
+
+    def test_save_setting_creates_missing_section(self, isolated):
+        from lib.config import save_setting, init_config_file
+        init_config_file()
+        save_setting("mailview", "preview_viewer", "glow")
+        text = (isolated / ".pst2md" / "config.toml").read_text(encoding="utf-8")
+        assert "[mailview]" in text
+        assert 'preview_viewer = "glow"' in text

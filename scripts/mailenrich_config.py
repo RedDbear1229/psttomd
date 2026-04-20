@@ -23,6 +23,7 @@ import click
 
 sys.path.insert(0, str(Path(__file__).parent))
 from lib.config import (
+    config_file_path,
     init_config_file,
     llm_config,
     load_config,
@@ -75,7 +76,7 @@ def cmd_show() -> None:
     """
     cfg = load_config()
     llm = llm_config(cfg)
-    config_path = Path.home() / ".pst2md" / "config.toml"
+    config_path = config_file_path()
 
     click.echo(f"설정 파일 : {config_path}")
     click.echo(f"  존재 여부: {'있음' if config_path.exists() else '없음 (기본값)'}")
@@ -177,7 +178,7 @@ def cmd_init(force: bool) -> None:
 
     파일 자체가 없으면 기본 템플릿으로 새로 생성한다.
     """
-    config_file = Path.home() / ".pst2md" / "config.toml"
+    config_file = config_file_path()
 
     if not config_file.exists():
         result = init_config_file()

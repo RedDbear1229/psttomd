@@ -89,7 +89,7 @@ auto_index = true
 #             sixel(Windows Terminal 1.22+, xterm+sixel, mlterm) 지원 터미널에서
 #             마크다운 내 이미지를 인라인으로 렌더링. 비지원 터미널에서는
 #             자리표시자 텍스트만 보임(에러 없이 동작). 원격 fetch 는
-#             --local-only 로 항상 차단.
+#             --local (-l) 로 항상 차단.
 #
 # 설치:
 #   Linux/WSL:  cargo install mdcat  또는  sudo apt install mdcat(신버전 배포판)

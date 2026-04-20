@@ -107,7 +107,7 @@ class TestPreviewCmd:
             mdcat_path="/usr/bin/mdcat", viewer="mdcat",
         )
         assert "/usr/bin/mdcat" in cmd
-        assert "--local-only" in cmd
+        assert "--local" in cmd
         assert "--columns" in cmd
         assert "FZF_PREVIEW_COLUMNS" in cmd
         # glow 는 primary 로 등장하지 않는다 (fallback 에도 아님 — 폴백은 bat/cat).
@@ -138,4 +138,4 @@ class TestPreviewCmd:
         )
         assert "mdcat.exe" in cmd
         assert "%FZF_PREVIEW_COLUMNS%" in cmd
-        assert "--local-only" in cmd
+        assert "--local" in cmd

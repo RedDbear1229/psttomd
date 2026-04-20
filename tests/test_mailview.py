@@ -121,12 +121,12 @@ class TestBuildFullViewerCmd:
         assert "-p" in cmd  # pager 유지
 
     def test_mdcat_viewer_no_pager_local_only(self):
-        """mdcat 선택 시 pager 미사용 + --local-only 로 이미지 인라인 렌더."""
+        """mdcat 선택 시 pager 미사용 + --local 로 이미지 인라인 렌더."""
         cmd = build_full_viewer_cmd(
             "/tmp/mail.md", "/usr/bin/glow", "dark",
             mdcat_path="/usr/bin/mdcat", viewer="mdcat",
         )
-        assert cmd == ["/usr/bin/mdcat", "--local-only", "/tmp/mail.md"]
+        assert cmd == ["/usr/bin/mdcat", "--local", "/tmp/mail.md"]
         assert "-p" not in cmd   # pager 붙이면 less 경유 → 이미지 깨짐
         assert "glow" not in " ".join(cmd)
 

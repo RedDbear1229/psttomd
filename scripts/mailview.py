@@ -432,11 +432,11 @@ def build_full_viewer_cmd(
       - viewer="glow"  → ``glow -p -s <style> <path>``
         pager(less) 사용. 이미지는 텍스트 링크로만 표시.
       - viewer="mdcat" + mdcat_path 존재
-        → ``mdcat --local-only <path>``
+        → ``mdcat --local <path>``
         pager 미사용(less 경유 시 이미지 렌더링이 깨지므로 직접 stdout 출력).
         Kitty/WezTerm/iTerm2 그래픽 프로토콜 또는 sixel(Windows Terminal 1.22+)
         지원 터미널에서 마크다운 내 이미지가 인라인으로 렌더링된다.
-        ``--local-only`` 로 원격 이미지 fetch 는 차단(트래킹 픽셀 방어).
+        ``--local`` (=-l) 로 원격 이미지 fetch 는 차단(트래킹 픽셀 방어).
       - viewer="mdcat" + mdcat_path=None → glow 로 폴백.
 
     Args:
@@ -450,7 +450,7 @@ def build_full_viewer_cmd(
         subprocess.run 에 그대로 넘길 argv 리스트.
     """
     if viewer == "mdcat" and mdcat_path:
-        return [mdcat_path, "--local-only", selected_path]
+        return [mdcat_path, "--local", selected_path]
     return [glow_path, "-p", "-s", glow_style, selected_path]
 
 
@@ -471,7 +471,7 @@ def build_fzf_preview_cmd(
       - mdcat       : Kitty/WezTerm/iTerm2/sixel(Windows Terminal 1.22+) 등
                       그래픽 지원 터미널에서 첨부/원격 이미지를 인라인 렌더.
                       비지원 터미널에서는 텍스트 자리표시자로 출력.
-                      `--local-only` 를 강제해 원격 fetch 는 차단.
+                      `--local` 을 강제해 원격 fetch 는 차단.
 
     폴백 체인: 선택 뷰어 → bat(구문 강조) → type/cat(플레인).
 
@@ -502,7 +502,7 @@ def build_fzf_preview_cmd(
         )
         if use_mdcat:
             primary = (
-                f'"{mdcat_path}" --local-only '
+                f'"{mdcat_path}" --local '
                 f'--columns %FZF_PREVIEW_COLUMNS% {item} {null_redirect}'
             )
         else:
@@ -522,12 +522,12 @@ def build_fzf_preview_cmd(
         if awk_path:
             awk_filter = f"awk '/^---$/{{c++;next}} c>=2' {item}"
             primary = (
-                f"({awk_filter} | '{mdcat_path}' --local-only "
+                f"({awk_filter} | '{mdcat_path}' --local "
                 f"--columns {width_var} - {null_redirect})"
             )
         else:
             primary = (
-                f"'{mdcat_path}' --local-only --columns {width_var} "
+                f"'{mdcat_path}' --local --columns {width_var} "
                 f"{item} {null_redirect}"
             )
     elif awk_path:

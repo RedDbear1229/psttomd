@@ -410,23 +410,34 @@ def main() -> None:
     """명령행 인자를 파싱하고 인덱싱을 실행한다."""
     _default_archive = load_config()["archive"]["root"]
     parser = argparse.ArgumentParser(
-        description="SQLite FTS5 인덱스 빌더",
+        prog="build-index",
+        description="SQLite FTS5 인덱스 빌더 — 증분(기본) 또는 전체 재구축.",
         epilog=(
             "동작 모드:\n"
-            "  기본(증분)   index_staging.jsonl 만 처리 — pst2md 변환 직후 사용\n"
-            "  --rebuild    아카이브 전체 재스캔 — 인덱스 손상 복구 또는 최초 구축 시\n"
+            "  기본(증분)   index_staging.jsonl 만 처리 — pst2md 변환 직후 사용.\n"
+            "                pst2md 가 변환 후 자동 호출하므로 수동 실행은 드물다.\n"
+            "  --rebuild    아카이브 전체를 다시 스캔해 인덱스를 재생성. 손상 복구\n"
+            "                또는 스키마 변경 후 최초 구축 시 사용.\n"
+            "\n"
+            "예시:\n"
+            "  build-index                                  # 기본 아카이브 증분\n"
+            "  build-index --archive ~/work-archive         # 특정 아카이브 증분\n"
+            "  build-index --rebuild                        # 전체 재구축\n"
             "\n"
             "관련 도구:\n"
-            "  pst2md       PST → MD 변환 (변환 완료 후 index_staging.jsonl 생성)\n"
-            "  mailgrep     FTS5 전문 검색: mailgrep '키워드' --after 2023-01-01\n"
-            "  mailview     fzf + glow 인터랙티브 뷰어: mailview '키워드'\n"
-            "  mailstat     아카이브 통계 요약: mailstat summary\n"
+            "  pst2md     PST → MD 변환 (자동 증분 인덱스 포함)\n"
+            "  mailgrep   FTS5 전문 검색: mailgrep '키워드' --after 2023-01-01\n"
+            "  mailview   fzf + glow 인터랙티브 뷰어\n"
+            "  mailstat   아카이브 통계 요약\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--archive",     default=_default_archive, help="아카이브 루트")
-    parser.add_argument("--incremental", action="store_true", help="스테이징 파일만 처리")
-    parser.add_argument("--rebuild",     action="store_true", help="전체 재구축")
+    parser.add_argument("--archive",     default=_default_archive, metavar="DIR",
+                        help="아카이브 루트 (기본: config archive.root).")
+    parser.add_argument("--incremental", action="store_true",
+                        help="스테이징 파일만 처리 (기본 동작과 동일, 명시용).")
+    parser.add_argument("--rebuild",     action="store_true",
+                        help="전체 재구축 (아카이브 전체 재스캔).")
     args = parser.parse_args()
 
     archive_root = Path(args.archive)

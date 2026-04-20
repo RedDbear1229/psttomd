@@ -380,17 +380,52 @@ def _append_log(log_path: Path, entry: dict[str, Any]) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
-@click.command()
-@click.option("--archive", "archive_path", default="", help="아카이브 루트 경로")
-@click.option("--since", default="", help="시작 날짜 필터 (YYYY-MM-DD, inclusive)")
-@click.option("--until", default="", help="종료 날짜 필터 (YYYY-MM-DD, inclusive)")
-@click.option("--limit", default=0, type=int, help="처리 상한 (0=무제한)")
-@click.option("--dry-run", is_flag=True, default=False, help="LLM 호출 없이 예상 토큰/비용만 출력")
-@click.option("--force", is_flag=True, default=False, help="llm_hash 무시하고 강제 재실행")
-@click.option("--budget-usd", default=0.0, type=float, help="비용 한도 (0=무제한)")
-@click.option("--folder", "folders", multiple=True, help="처리할 폴더 필터 (여러 번 지정 가능)")
-@click.option("--concurrency", default=0, type=int, help="동시 LLM 호출 수 (0=config 값 사용)")
-@click.option("-v", "--verbose", is_flag=True, default=False, help="상세 로그 출력")
+_MAILENRICH_EPILOG = (
+    "\b\n"
+    "예시:\n"
+    "  mailenrich --dry-run                     예상 토큰/비용만 출력 (추천 첫 실행)\n"
+    "  mailenrich --limit 50                    최대 50개만 처리\n"
+    "  mailenrich --since 2024-01-01            2024년 이후 메일만\n"
+    "  mailenrich --folder 'Inbox/계약'         특정 폴더만 (중복 지정 가능)\n"
+    "  mailenrich --budget-usd 5.00             비용 상한 초과 시 중단\n"
+    "  mailenrich --force --concurrency 8       llm_hash 무시 + 병렬도 8\n"
+    "\n"
+    "\b\n"
+    "동작:\n"
+    "  frontmatter 에 summary / llm_tags / related / llm_hash / llm_model /\n"
+    "  llm_enriched_at 를 기록하고, 본문 뒤에 <!-- LLM-ENRICH:BEGIN --> ...\n"
+    "  <!-- LLM-ENRICH:END --> 섹션을 삽입한다.\n"
+    "\n"
+    "멱등성: body SHA-256(llm_hash) 가 동일하면 재호출하지 않는다.\n"
+    "설정:   mailenrich-config show  또는  pst2md-config set llm.<key> <value>"
+)
+
+
+@click.command(
+    name="mailenrich",
+    epilog=_MAILENRICH_EPILOG,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+@click.option("--archive", "archive_path", default="", metavar="DIR",
+              help="아카이브 루트 (기본: config archive.root).")
+@click.option("--since", default="", metavar="YYYY-MM-DD",
+              help="시작 날짜 필터 (inclusive).")
+@click.option("--until", default="", metavar="YYYY-MM-DD",
+              help="종료 날짜 필터 (inclusive).")
+@click.option("--limit", default=0, type=int, metavar="N",
+              help="처리 상한. 0=무제한 (기본).")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="LLM 호출 없이 예상 토큰/비용만 출력.")
+@click.option("--force", is_flag=True, default=False,
+              help="llm_hash 무시하고 강제 재실행.")
+@click.option("--budget-usd", default=0.0, type=float, metavar="AMOUNT",
+              help="비용 한도 (USD). 초과 시 중단. 0=무제한.")
+@click.option("--folder", "folders", multiple=True, metavar="PATH",
+              help="처리할 폴더 필터 (중복 지정 가능).")
+@click.option("--concurrency", default=0, type=int, metavar="N",
+              help="동시 LLM 호출 수. 0=config 값 사용.")
+@click.option("-v", "--verbose", is_flag=True, default=False,
+              help="상세 로그 출력 (DEBUG level).")
 def main(
     archive_path: str,
     since: str,

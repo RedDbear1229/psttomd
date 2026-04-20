@@ -278,34 +278,63 @@ def build_query(
 # CLI 커맨드
 # ---------------------------------------------------------------------------
 
-@click.command(name="mailgrep")
+@click.command(
+    name="mailgrep",
+    epilog=(
+        "예시:\n"
+        "\n"
+        "  mailgrep '계약서'                          제목·발신자·본문 전체 검색\n"
+        "  mailgrep '계약' --from 홍길동              발신자 필터와 AND\n"
+        "  mailgrep --body 'payment'                  본문 전용 검색\n"
+        "  mailgrep 'invoice' --after 2023-01-01      날짜 범위\n"
+        "  mailgrep '' --folder 'Inbox/계약'          폴더 필터만\n"
+        "  mailgrep 'bug' --smart from:alice has:attachment\n"
+        "  mailgrep 'TODO' --json                     JSON Lines 출력\n"
+        "  mailgrep 'TODO' --paths-only | fzf         fzf 연동\n"
+        "  mailgrep '키워드' --all-archives           설정된 모든 아카이브 검색\n"
+    ),
+)
 @click.argument("query", default="")
-@click.option("--from",      "from_filter", default="", help="발신자 필터 (부분 일치)")
-@click.option("--to",        "to_filter",   default="", help="수신자 필터 (부분 일치)")
-@click.option("--after",     default="", metavar="YYYY-MM-DD", help="이 날짜 이후")
-@click.option("--before",    default="", metavar="YYYY-MM-DD", help="이 날짜 이전")
-@click.option("--folder",    default="", help="폴더 경로 부분 일치")
-@click.option("--thread",    default="", help="스레드 ID 정확 일치")
-@click.option("--body",      "body_filter", default="", help="본문 내용 전용 검색 (FTS5 body: 컬럼)")
-@click.option("--limit",     default=50, show_default=True, help="최대 결과 수")
-@click.option("--json",      "output_json", is_flag=True, help="JSON Lines 출력")
-@click.option("--paths-only", is_flag=True, help="파일 경로만 출력 (fzf 파이프용)")
-@click.option("--archive",   default="", help="아카이브 루트 (기본: config.toml)")
+@click.option("--from",      "from_filter", default="", metavar="NAME",
+              help="발신자 필터 (부분 일치).")
+@click.option("--to",        "to_filter",   default="", metavar="NAME",
+              help="수신자 필터 (부분 일치).")
+@click.option("--after",     default="", metavar="YYYY-MM-DD",
+              help="이 날짜 이후 메일만 (ISO 형식).")
+@click.option("--before",    default="", metavar="YYYY-MM-DD",
+              help="이 날짜 이전 메일만 (ISO 형식).")
+@click.option("--folder",    default="", metavar="PATH",
+              help="폴더 경로 부분 일치 (예: 'Inbox/계약').")
+@click.option("--thread",    default="", metavar="ID",
+              help="스레드 ID 정확 일치 (예: t_abc123de).")
+@click.option("--body",      "body_filter", default="", metavar="QUERY",
+              help="본문 전용 검색 (FTS5 body 컬럼).")
+@click.option("--limit",     default=50, show_default=True, metavar="N",
+              help="최대 결과 수.")
+@click.option("--json",      "output_json", is_flag=True,
+              help="JSON Lines 포맷으로 출력 (파이프/자동화용).")
+@click.option("--paths-only", is_flag=True,
+              help="파일 경로만 출력 (fzf 파이프용).")
+@click.option("--archive",   default="", metavar="DIR",
+              help="아카이브 루트 (기본: config archive.root).")
 @click.option("--smart",         is_flag=True,
-              help="스마트 쿼리 파싱 (from:, after:, has:attachment 등 인라인 필터)")
+              help="인라인 필터 파싱: from:/after:/subject:/has:attachment.")
 @click.option("--all-archives",  is_flag=True,
-              help="config.toml 의 모든 아카이브를 검색 (archive.roots 포함)")
+              help="config 의 archive.roots 에 등록된 모든 아카이브 검색.")
 def main(
     query, from_filter, to_filter, after, before, folder, thread,
     body_filter, limit, output_json, paths_only, archive, smart, all_archives,
 ):
     """SQLite FTS5 기반 메일 아카이브 검색.
 
-    QUERY 는 제목·발신자·본문 전체를 검색한다.
-    본문만 검색하려면 --body 를 사용한다.
+    QUERY 는 제목·발신자·본문 전체를 검색한다. 본문만 검색하려면 --body 를 쓴다.
 
-    --smart 플래그를 사용하면 쿼리 안의 'key:value' 토큰을 필터로 변환한다:
-      from:발신자  after:2023-01  has:attachment  subject:키워드
+    \b
+    스마트 쿼리(--smart):
+      from:발신자  to:수신자  subject:키워드
+      after:2023-01  before:2024-06-30
+      has:attachment
+      folder:'Inbox/계약'
     """
     cfg = load_config()
     if archive:

@@ -146,11 +146,28 @@ def check_file(md_path: Path, archive_root: Path) -> list[str]:
 
 def main() -> None:
     """명령행 인자를 파싱하고 무결성 검증을 실행한다."""
-    parser = argparse.ArgumentParser(description="아카이브 무결성 검증")
     _default_archive = load_config()["archive"]["root"]
-    parser.add_argument("--archive", default=_default_archive, help="아카이브 루트")
-    parser.add_argument("--sample",  type=int, default=200, help="샘플 수 (기본: 200)")
-    parser.add_argument("--full",    action="store_true", help="전체 파일 검증")
+    parser = argparse.ArgumentParser(
+        prog="verify",
+        description=(
+            "아카이브 MD 파일과 SQLite 인덱스의 무결성을 검증한다. "
+            "frontmatter 필드·첨부 링크·UTF-8 인코딩·DB 레코드 수를 확인한다."
+        ),
+        epilog=(
+            "예시:\n"
+            "  verify                           # 랜덤 200개 샘플\n"
+            "  verify --sample 500              # 샘플 수 지정\n"
+            "  verify --full                    # 전체 검증 (시간 소요)\n"
+            "  verify --archive ~/work-archive  # 다른 아카이브\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--archive", default=_default_archive, metavar="DIR",
+                        help="아카이브 루트 (기본: config archive.root).")
+    parser.add_argument("--sample",  type=int, default=200, metavar="N",
+                        help="랜덤 샘플 수 (기본: 200).")
+    parser.add_argument("--full",    action="store_true",
+                        help="샘플 대신 전체 MD 파일 검증.")
     args = parser.parse_args()
 
     archive_root = Path(args.archive)

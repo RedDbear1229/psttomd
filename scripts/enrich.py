@@ -448,12 +448,32 @@ SORT date DESC
 
 def main() -> None:
     """명령행 인자를 파싱하고 MOC 생성을 실행한다."""
-    parser = argparse.ArgumentParser(description="Obsidian 위키 강화 스크립트")
     _default_archive = load_config()["archive"]["root"]
-    parser.add_argument("--archive",  default=_default_archive, help="아카이브 루트")
-    parser.add_argument("--people",   action="store_true", help="people MOC 만 생성")
-    parser.add_argument("--threads",  action="store_true", help="threads MOC 만 생성")
-    parser.add_argument("--projects", action="store_true", help="projects MOC 만 생성")
+    parser = argparse.ArgumentParser(
+        prog="enrich",
+        description=(
+            "Obsidian MOC(Map of Content) 를 자동 생성한다. "
+            "people/threads/projects 3종류의 인덱스 노트가 아카이브 루트에 생성된다."
+        ),
+        epilog=(
+            "예시:\n"
+            "  enrich                     # people + threads + projects 전부\n"
+            "  enrich --people            # 발신자 MOC 만\n"
+            "  enrich --threads           # 스레드 MOC 만\n"
+            "  enrich --projects          # 프로젝트 MOC 만\n"
+            "\n"
+            "LLM 기반 요약·태그가 필요하면 `mailenrich` 를 사용한다.\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--archive",  default=_default_archive, metavar="DIR",
+                        help="아카이브 루트 (기본: config archive.root).")
+    parser.add_argument("--people",   action="store_true",
+                        help="people MOC 만 생성 (발신자별 인덱스).")
+    parser.add_argument("--threads",  action="store_true",
+                        help="threads MOC 만 생성 (스레드별 인덱스).")
+    parser.add_argument("--projects", action="store_true",
+                        help="projects MOC 만 생성 (프로젝트별 인덱스).")
     args = parser.parse_args()
 
     archive_root = Path(args.archive)

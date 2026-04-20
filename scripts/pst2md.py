@@ -959,25 +959,30 @@ def convert_pst(
 _TOOLS_OVERVIEW = """\
 pst2md — PST → Markdown 아카이브 파이프라인
 
-[변환]
-  pst2md          PST → Markdown 변환  (--pst 필수)
-  build-index     SQLite FTS5 인덱스 빌드·재구축
-  archive-monthly 월간 PST 배치 변환 (12개월+ 경과 메일)
+[변환 / 인덱스]
+  pst2md             PST → Markdown 변환 (--pst 필수, 변환 후 자동 증분 인덱스)
+  build-index        SQLite FTS5 인덱스 빌드·재구축
+  archive-monthly    월간 PST 배치 변환 (12개월+ 경과 메일)
 
-[검색·열람]
-  mailgrep        FTS5 전문 검색
-                    mailgrep '키워드' --from 홍길동 --after 2023-01-01
-  mailview        fzf + glow 인터랙티브 뷰어
-                    mailview '키워드'
-  mailstat        아카이브 통계 요약
-                    mailstat summary
+[검색 · 열람]
+  mailgrep           FTS5 전문 검색
+                       mailgrep '키워드' --from 홍길동 --after 2023-01-01
+  mailview           fzf + glow/mdcat 인터랙티브 뷰어
+                       mailview '키워드'        (Enter=전체 열람, :q=종료)
+                       mailview --doctor         (환경 진단)
+  mailstat           아카이브 통계 요약
+                       mailstat summary / monthly / senders
+
+[LLM 보강 (선택)]
+  mailenrich         요약·태그·관련 문서 자동 생성
+                       mailenrich --dry-run / --limit 10 / --force
+  mailenrich-config  LLM provider/endpoint/token 설정
 
 [관리]
-  enrich          Obsidian MOC 자동 생성
-  verify          MD 파일 무결성 검증
-                    verify --sample 200
-  pst2md-config   설정 파일 관리
-                    pst2md-config show / set-output / init
+  enrich             Obsidian MOC 자동 생성 (people/threads/projects)
+  verify             MD 파일 무결성 검증 (--sample 200)
+  pst2md-config      통합 설정 관리
+                       pst2md-config show / get KEY / set KEY VALUE / unset KEY
 
 각 도구의 옵션: <명령어> --help\
 """
@@ -985,6 +990,12 @@ pst2md — PST → Markdown 아카이브 파이프라인
 _USAGE_HINT = """
 pst2md 사용법:
   pst2md --pst archive.pst [--out ~/mail-archive] [--dry-run] [--resume]
+
+예시:
+  pst2md --pst archive.pst --dry-run             # 파일 미생성, 통계만
+  pst2md --pst archive.pst --resume              # 체크포인트 이어 시작
+  pst2md --pst archive.pst --no-index            # 자동 인덱싱 건너뜀
+  pst2md --pst archive.pst --save-out            # --out 경로를 config 에 영구 저장
 """
 
 
@@ -1002,30 +1013,41 @@ def main() -> None:
     cfg = load_config()
 
     parser = argparse.ArgumentParser(
-        description="PST → Markdown 변환기 (크로스플랫폼)",
+        prog="pst2md",
+        description=(
+            "PST → Markdown 변환기. 메시지별 YAML frontmatter MD 를 생성하고 "
+            "완료 후 SQLite FTS5 인덱스를 증분 갱신한다."
+        ),
         epilog=_TOOLS_OVERVIEW + _USAGE_HINT,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--pst",     required=True, help="PST 파일 경로")
-    parser.add_argument("--out",     default=cfg["archive"]["root"], help="출력 루트")
-    parser.add_argument("--cutoff",  help="이 날짜 이후 메일 제외 (YYYY-MM-DD)")
-    parser.add_argument("--dry-run", action="store_true", help="파일 미생성, 통계만")
-    parser.add_argument("--resume",  action="store_true", help="체크포인트 이어 시작")
-    parser.add_argument("--folder",  help="폴더 필터 정규식")
-    parser.add_argument(
-        "--backend",
+    g_src = parser.add_argument_group("입력")
+    g_src.add_argument("--pst",    required=True, metavar="PATH",
+                       help="PST 파일 경로 (필수).")
+    g_src.add_argument("--folder", metavar="REGEX",
+                       help="변환할 폴더 이름 정규식 (예: '^Inbox$').")
+    g_src.add_argument("--cutoff", metavar="YYYY-MM-DD",
+                       help="이 날짜 이후 메일은 제외 (ISO 형식).")
+
+    g_out = parser.add_argument_group("출력")
+    g_out.add_argument("--out", default=cfg["archive"]["root"], metavar="DIR",
+                       help="출력 루트 (기본: config archive.root).")
+    g_out.add_argument("--save-out", action="store_true",
+                       help="--out 경로를 config.toml 에 영구 저장.")
+    g_out.add_argument("--dry-run", action="store_true",
+                       help="파일을 생성하지 않고 통계만 출력.")
+
+    g_run = parser.add_argument_group("동작")
+    g_run.add_argument("--resume", action="store_true",
+                       help="체크포인트에서 이어 시작 (이미 변환된 메일은 건너뜀).")
+    g_run.add_argument(
+        "--backend", metavar="NAME",
         choices=["auto", "pypff", "readpst", "win32com"],
-        help="PST 백엔드 강제 지정 (기본: config.toml 값)",
+        help="PST 백엔드 강제 지정 (auto|pypff|readpst|win32com, 기본: config).",
     )
-    parser.add_argument(
-        "--save-out",
-        action="store_true",
-        help="--out 경로를 ~/.pst2md/config.toml 에 영구 저장",
-    )
-    parser.add_argument(
-        "--no-index",
-        action="store_true",
-        help="변환 후 자동 build-index(증분)를 건너뛴다",
+    g_run.add_argument(
+        "--no-index", action="store_true",
+        help="변환 후 자동 build-index(증분) 를 건너뜀.",
     )
     args = parser.parse_args()
 

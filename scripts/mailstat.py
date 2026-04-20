@@ -126,11 +126,40 @@ def print_table(
 # CLI 그룹
 # ---------------------------------------------------------------------------
 
-@click.group()
-@click.option("--archive", default="", help="아카이브 루트 (기본: config.toml)")
+_MAILSTAT_EPILOG = (
+    "\b\n"
+    "서브커맨드:\n"
+    "  summary       전체 요약 (메일 수 · 발신자 · 기간 · 디스크)\n"
+    "  monthly       월별 메일 수 (최근 36개월)\n"
+    "  senders       상위 발신자 Top N\n"
+    "  folders       폴더별 메일 수 Top 30\n"
+    "  threads       긴 스레드 Top N\n"
+    "  attachments   첨부 파일 용량 통계\n"
+    "  range         아카이브 날짜 범위\n"
+    "\n"
+    "\b\n"
+    "예시:\n"
+    "  mailstat summary\n"
+    "  mailstat senders --top 20\n"
+    "  mailstat threads --top 10\n"
+    "  mailstat --archive ~/work-archive monthly"
+)
+
+
+@click.group(
+    name="mailstat",
+    epilog=_MAILSTAT_EPILOG,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+@click.option("--archive", default="", metavar="DIR",
+              help="아카이브 루트 (기본: config archive.root).")
 @click.pass_context
 def main(ctx, archive):
-    """메일 아카이브 통계."""
+    """메일 아카이브 통계 대시보드.
+
+    SQLite 인덱스와 파일시스템을 조합해 요약·월별·발신자·폴더·스레드·
+    첨부·날짜범위 통계를 출력한다. 서브커맨드별로 결과가 다르다.
+    """
     ctx.ensure_object(dict)
     cfg = load_config()
     if archive:
@@ -203,7 +232,8 @@ def monthly(ctx):
 # ---------------------------------------------------------------------------
 
 @main.command()
-@click.option("--top", default=20, show_default=True, help="상위 N명")
+@click.option("--top", default=20, show_default=True, metavar="N",
+              help="상위 N명 (기본: 20).")
 @click.pass_context
 def senders(ctx, top):
     """발신자별 메일 수 상위 N명."""
@@ -254,7 +284,8 @@ def folders(ctx):
 # ---------------------------------------------------------------------------
 
 @main.command()
-@click.option("--top", default=20, show_default=True, help="상위 N개")
+@click.option("--top", default=20, show_default=True, metavar="N",
+              help="상위 N개 (기본: 20).")
 @click.pass_context
 def threads(ctx, top):
     """메시지 수 기준 긴 스레드 Top N."""

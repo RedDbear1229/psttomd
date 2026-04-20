@@ -63,9 +63,43 @@ def _mask_token(token: str) -> str:
     return token[:4] + "****" if len(token) > 4 else "****"
 
 
-@click.group()
+_MAILENRICH_CONFIG_EPILOG = (
+    "\b\n"
+    "서브커맨드:\n"
+    "  show                현재 [llm] / [llm.scope] 설정 출력 (토큰 마스킹)\n"
+    "  set-provider NAME   openai | anthropic | ollama\n"
+    "  set-endpoint URL    API 엔드포인트\n"
+    "  set-model NAME      모델 이름 (gpt-4o-mini / claude-haiku-... / llama3.1:8b)\n"
+    "  set-token TOKEN     API 토큰 (env LLM_TOKEN 권장)\n"
+    "  init [--force]      config.toml 에 [llm] 섹션 추가/재설정\n"
+    "\n"
+    "\b\n"
+    "예시:\n"
+    "  mailenrich-config show\n"
+    "  mailenrich-config set-provider ollama\n"
+    "  mailenrich-config set-endpoint http://localhost:11434\n"
+    "  mailenrich-config set-model llama3.1:8b\n"
+    "  export LLM_TOKEN=sk-xxxxx          # 권장: 토큰은 환경변수로\n"
+    "\n"
+    "\b\n"
+    "대안 (범용 CLI 로도 동일 설정 변경 가능):\n"
+    "  pst2md-config set llm.provider ollama\n"
+    "  pst2md-config set llm.model llama3.1:8b"
+)
+
+
+@click.group(
+    name="mailenrich-config",
+    epilog=_MAILENRICH_CONFIG_EPILOG,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 def main() -> None:
-    """mailenrich LLM 설정 파일(~/.pst2md/config.toml [llm])을 관리한다."""
+    """mailenrich LLM 설정 파일(~/.pst2md/config.toml [llm])을 관리한다.
+
+    provider / endpoint / model / token 과 [llm.scope] 의 요약 길이 ·
+    태그 개수 등을 조회하고 수정할 수 있다. 토큰은 env LLM_TOKEN 이 있으면
+    그 값이 우선한다.
+    """
 
 
 @main.command("show")
@@ -112,25 +146,30 @@ def cmd_show() -> None:
 
 
 @main.command("set-provider")
-@click.argument("provider", type=click.Choice(["openai", "anthropic", "ollama"]))
+@click.argument("provider",
+                type=click.Choice(["openai", "anthropic", "ollama"]),
+                metavar="PROVIDER")
 def cmd_set_provider(provider: str) -> None:
-    """LLM provider 를 설정한다.
+    """LLM provider 를 설정한다 (openai | anthropic | ollama).
 
-    PROVIDER: openai | anthropic | ollama\n
-    예시:\n
-        mailenrich-config set-provider ollama
+    \b
+    예시:
+        mailenrich-config set-provider openai
+        mailenrich-config set-provider ollama        # 로컬 무료 테스트
     """
     saved = save_llm_setting("provider", provider)
     click.echo(f"provider = {provider!r} 저장 완료: {saved}")
 
 
 @main.command("set-endpoint")
-@click.argument("endpoint")
+@click.argument("endpoint", metavar="URL")
 def cmd_set_endpoint(endpoint: str) -> None:
-    """LLM API 엔드포인트를 설정한다.
+    """LLM API 엔드포인트 URL 을 설정한다.
 
-    예시:\n
-        mailenrich-config set-endpoint https://api.openai.com/v1\n
+    \b
+    예시:
+        mailenrich-config set-endpoint https://api.openai.com/v1
+        mailenrich-config set-endpoint https://api.anthropic.com
         mailenrich-config set-endpoint http://localhost:11434
     """
     saved = save_llm_setting("endpoint", endpoint)
@@ -138,13 +177,14 @@ def cmd_set_endpoint(endpoint: str) -> None:
 
 
 @main.command("set-model")
-@click.argument("model")
+@click.argument("model", metavar="NAME")
 def cmd_set_model(model: str) -> None:
     """사용할 LLM 모델 이름을 설정한다.
 
-    예시:\n
-        mailenrich-config set-model gpt-4o-mini\n
-        mailenrich-config set-model claude-haiku-4-5-20251001\n
+    \b
+    예시:
+        mailenrich-config set-model gpt-4o-mini
+        mailenrich-config set-model claude-haiku-4-5-20251001
         mailenrich-config set-model llama3.1:8b
     """
     saved = save_llm_setting("model", model)
@@ -152,16 +192,19 @@ def cmd_set_model(model: str) -> None:
 
 
 @main.command("set-token")
-@click.argument("token")
+@click.argument("token", metavar="TOKEN")
 def cmd_set_token(token: str) -> None:
     """API 토큰을 config.toml 에 저장한다.
 
-    보안 권고: 토큰은 환경변수 LLM_TOKEN 으로 설정하는 것을 권장한다.
-    config.toml 에 저장하면 파일 권한을 반드시 600 으로 설정하라.
+    \b
+    보안 권고:
+      토큰은 환경변수 LLM_TOKEN 으로 설정하는 것을 권장한다.
+      config.toml 에 저장하면 파일 권한을 반드시 600 으로 설정하라.
 
-    예시:\n
-        export LLM_TOKEN=sk-xxxxx      # 권장\n
-        mailenrich-config set-token sk-xxxxx   # 대안
+    \b
+    예시:
+        export LLM_TOKEN=sk-xxxxx                 # 권장
+        mailenrich-config set-token sk-xxxxx      # 대안
     """
     saved = save_llm_setting("token", token)
     click.echo(f"token = {_mask_token(token)} 저장 완료: {saved}")
@@ -171,12 +214,14 @@ def cmd_set_token(token: str) -> None:
 @main.command("init")
 @click.option(
     "--force", is_flag=True, default=False,
-    help="기존 config.toml 이 있어도 [llm] 섹션을 추가",
+    help="기존 [llm] 섹션을 기본 템플릿으로 교체.",
 )
 def cmd_init(force: bool) -> None:
     """config.toml 에 [llm] 섹션이 없으면 추가한다.
 
+    \b
     파일 자체가 없으면 기본 템플릿으로 새로 생성한다.
+    [llm] 섹션이 이미 있으면 안내만 출력 (--force 로 덮어씀).
     """
     config_file = config_file_path()
 

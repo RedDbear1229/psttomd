@@ -150,17 +150,36 @@ def main() -> None:
     cfg = load_config()
     plat = detect_platform()
 
-    parser = argparse.ArgumentParser(description="월간 PST 아카이브 배치 (크로스플랫폼)")
-    parser.add_argument("--pst",       required=True, help="변환할 PST 파일 경로")
-    parser.add_argument("--archive",   default=cfg["archive"]["root"], help="아카이브 루트")
-    parser.add_argument("--cutoff",    default="", help="이 날짜 이후 제외 (기본: 12개월 전)")
-    parser.add_argument("--execute",   action="store_true", help="실제 실행 (기본: dry-run)")
-    parser.add_argument("--no-enrich", action="store_true", help="Obsidian MOC 갱신 건너뜀")
+    parser = argparse.ArgumentParser(
+        prog="archive-monthly",
+        description=(
+            "월간 PST 아카이브 배치. pst2md → build-index → (enrich) 를 "
+            "순서대로 실행하고 로그를 archive/logs/ 에 남긴다. 기본은 dry-run."
+        ),
+        epilog=(
+            "예시:\n"
+            "  archive-monthly --pst archive.pst                       # dry-run\n"
+            "  archive-monthly --pst archive.pst --execute              # 실제 실행\n"
+            "  archive-monthly --pst archive.pst --cutoff 2024-01-01    # cutoff 수동 지정\n"
+            "  archive-monthly --pst archive.pst --execute --no-enrich  # MOC 생략\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--pst",       required=True, metavar="PATH",
+                        help="변환할 PST 파일 경로 (필수).")
+    parser.add_argument("--archive",   default=cfg["archive"]["root"], metavar="DIR",
+                        help="아카이브 루트 (기본: config archive.root).")
+    parser.add_argument("--cutoff",    default="", metavar="YYYY-MM-DD",
+                        help="이 날짜 이후 제외 (기본: 오늘로부터 12개월 전).")
+    parser.add_argument("--execute",   action="store_true",
+                        help="실제 실행 (기본: dry-run, 파일 변경 없음).")
+    parser.add_argument("--no-enrich", action="store_true",
+                        help="Obsidian MOC 갱신 단계 건너뜀.")
     parser.add_argument(
-        "--backend",
+        "--backend", metavar="NAME",
         choices=["auto", "pypff", "readpst", "win32com"],
         default="",
-        help="PST 백엔드 강제 지정",
+        help="PST 백엔드 강제 지정 (auto|pypff|readpst|win32com).",
     )
     args = parser.parse_args()
 

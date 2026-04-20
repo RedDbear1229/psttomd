@@ -1662,7 +1662,7 @@ def run_doctor() -> None:
     click.echo(f"Python         : {sys.version.split()[0]}")
 
     # 환경변수
-    for key in ("LANG", "LC_CTYPE", "LC_ALL", "TERM", "TERMUX_VERSION"):
+    for key in ("LANG", "LC_CTYPE", "LC_ALL", "TERM"):
         val = os.environ.get(key, "")
         mark = "✓" if val else "-"
         click.echo(f"{key:<15}: {val or '(unset)':<30} {mark}")
@@ -1696,8 +1696,8 @@ def run_doctor() -> None:
     # 한글 입력 안내
     click.echo("-" * 60)
     click.echo("한글 입력 체크리스트:")
-    click.echo("  - 터미널 폰트에 CJK 글리프 포함 (Termux: pkg install noto-cjk)")
-    click.echo("  - IME 가 조합중 문자 전송 모드인지 (Gboard '한국어' 권장)")
+    click.echo("  - 터미널 폰트에 CJK 글리프 포함 (예: Noto Sans CJK, D2Coding)")
+    click.echo("  - IME 조합중 문자가 정상 전송되는지 (Windows MS-IME / WSL fcitx5-hangul)")
     click.echo("  - TERM 이 xterm-256color / tmux-256color 계열인지")
     click.echo("  자세한 내용: docs/hangul-input.md")
 
@@ -1706,18 +1706,49 @@ def run_doctor() -> None:
 # CLI 커맨드
 # ---------------------------------------------------------------------------
 
-@click.command(name="mailview")
+@click.command(
+    name="mailview",
+    epilog=(
+        "예시:\n"
+        "\n"
+        "  mailview                              모든 메일 대상 fzf 뷰어\n"
+        "  mailview '계약'                       초기 쿼리로 '계약' 입력\n"
+        "  mailview --from alice --after 2024    발신자+기간 필터\n"
+        "  mailview --thread t_abc123de          스레드 전체 보기\n"
+        "  mailview --doctor                     환경 진단 (plat/locale/바이너리)\n"
+        "  mailview --dedupe --dry-run           중복 메일 감지 (삭제 없음)\n"
+        "\n"
+        "fzf 내부 키:\n"
+        "  Enter  전체 열람 (glow 또는 mdcat — preview_viewer 설정)\n"
+        "  Esc    쿼리 · 필터 초기화 (Ctrl-R 동일)\n"
+        "  :q+Enter  종료 (Linux/WSL, vim 스타일)\n"
+        "  Alt-S/F/T  발신자/폴더/태그 필터 (sub-fzf)\n"
+        "  Ctrl-A/U   첨부/URL 열기    Ctrl-X 삭제\n"
+        "\n"
+        "한글 입력 문제: docs/hangul-input.md 참고."
+    ),
+)
 @click.argument("query", default="")
-@click.option("--from",    "from_filter", default="", help="발신자 필터")
-@click.option("--after",   default="", metavar="YYYY-MM-DD")
-@click.option("--before",  default="", metavar="YYYY-MM-DD")
-@click.option("--folder",  default="", help="폴더 필터")
-@click.option("--thread",  default="", help="스레드 ID")
-@click.option("--body",    "body_filter", default="", help="본문 내용 전용 검색")
-@click.option("--archive", default="", help="아카이브 루트")
-@click.option("--dedupe",  is_flag=True, help="중복 메일 감지 및 정리")
-@click.option("--dry-run", "dry_run", is_flag=True, help="--dedupe 와 함께 사용: 삭제 없이 목록만 출력")
-@click.option("--doctor",  is_flag=True, help="환경 진단 (fzf/glow/locale/TERM/아카이브) 출력 후 종료")
+@click.option("--from",    "from_filter", default="", metavar="NAME",
+              help="발신자 필터 (부분 일치).")
+@click.option("--after",   default="", metavar="YYYY-MM-DD",
+              help="이 날짜 이후 메일만.")
+@click.option("--before",  default="", metavar="YYYY-MM-DD",
+              help="이 날짜 이전 메일만.")
+@click.option("--folder",  default="", metavar="PATH",
+              help="폴더 경로 필터 (부분 일치).")
+@click.option("--thread",  default="", metavar="ID",
+              help="스레드 ID 정확 일치 (예: t_abc123de).")
+@click.option("--body",    "body_filter", default="", metavar="QUERY",
+              help="본문 전용 검색 (FTS5 body 컬럼).")
+@click.option("--archive", default="", metavar="DIR",
+              help="아카이브 루트 (기본: config archive.root).")
+@click.option("--dedupe",  is_flag=True,
+              help="중복 메일 감지 및 정리 (fzf 미표시).")
+@click.option("--dry-run", "dry_run", is_flag=True,
+              help="--dedupe 와 함께: 삭제 없이 목록만 출력.")
+@click.option("--doctor",  is_flag=True,
+              help="환경 진단 (플랫폼/locale/fzf·glow·mdcat/아카이브) 후 종료.")
 # ── 내부 히든 모드 (fzf execute/reload 에서 호출) ──────────────────────
 @click.option("--open-att",   "_open_att",    default="", hidden=True,
               help="내부용: 지정 MD 파일의 첨부 파일 열기")

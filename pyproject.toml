@@ -62,6 +62,7 @@ include = ["scripts*"]
 dev = [
     "pytest>=8",
     "pytest-cov>=5",
-    "ruff>=0.4",       # 린터 + 포매터
-    "mypy>=1.10",      # 타입 체커
+    "ruff>=0.4",                                  # 린터 + 포매터
+    "mypy>=1.10",                                 # 타입 체커
+    "libpff-python; sys_platform == 'linux'",     # Linux/WSL 테스트용 pypff 백엔드
 ]

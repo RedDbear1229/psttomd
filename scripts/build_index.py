@@ -376,6 +376,33 @@ def extract_frontmatter(md_path: Path) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# 외부 호출용 헬퍼
+# ---------------------------------------------------------------------------
+
+def run_incremental(archive_root: Path) -> int:
+    """증분 인덱싱(staging → DB)을 한 번 실행하고 삽입 행 수를 반환한다.
+
+    pst2md.py 가 변환 완료 후 자동으로 호출한다. CLI 를 거치지 않으므로
+    argparse 처리를 우회해 지연을 최소화한다.
+
+    Args:
+        archive_root: 아카이브 루트 (index_staging.jsonl 위치).
+
+    Returns:
+        이번 호출에서 삽입 시도한 행 수.
+
+    Raises:
+        OSError, sqlite3.Error: DB 연결/스키마 초기화/쓰기 실패 시.
+    """
+    conn = get_conn(archive_root)
+    try:
+        init_schema(conn)
+        return process_staging(conn, archive_root)
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # CLI 진입점
 # ---------------------------------------------------------------------------
 

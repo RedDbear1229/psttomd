@@ -381,6 +381,10 @@ uv run pst2md `
 uv run build-index
 ```
 
+> **참고**: `pst2md` 는 변환 완료 후 자동으로 증분 인덱싱을 수행한다.
+> 대량 배치(수만 건) 를 순차 변환할 때는 `--no-index` 로 건너뛴 뒤 마지막에
+> `build-index --rebuild` 를 한 번 돌리는 쪽이 효율적이다.
+
 ### Step 4: 동작 확인
 
 ```bash
@@ -420,7 +424,8 @@ for pst in "$PST_DIR"/*.pst; do
     echo "==============================="
     uv run pst2md \
         --pst "$pst" \
-        --resume       # 중단 후 재개 가능
+        --resume \
+        --no-index    # 배치 중에는 인덱싱 건너뛰기
 done
 
 # 전체 완료 후 인덱스 재구축
@@ -569,9 +574,19 @@ mailview "계약" --from 홍길동 --after 2024-01-01
 | `Ctrl-O` | `$EDITOR` (Linux) / `notepad` (Windows)로 열기 |
 | `↑↓` | 목록 이동 |
 | `/` | 목록 내 추가 필터 |
-| `ESC` | 종료 |
+| `Ctrl-R` / `Esc` | 쿼리·필터 초기화 |
+| `:q`+Enter | 종료 (Linux/WSL 전용, vim 스타일) |
 
 오른쪽 패널에 선택 메일 미리보기가 실시간으로 표시됩니다.
+미리보기는 YAML frontmatter 를 숨기고 본문부터 glow 로 렌더링합니다 (`awk` 필요).
+
+#### 진단 / 한글 입력 문제
+
+```bash
+mailview --doctor       # 플랫폼/locale/fzf/glow/bat/awk 버전 점검
+```
+
+한글 입력이 잘 되지 않을 때는 [docs/hangul-input.md](hangul-input.md) 를 참고.
 
 #### 전체 옵션
 

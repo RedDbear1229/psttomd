@@ -444,14 +444,33 @@ def build_fzf_preview_cmd(
             if bat_path else f'type {item}'
         )
         return f'"{glow_path}" -s "{style}" {item} {null_redirect} || {fallback}'
-    else:
-        item          = "'{2}'"
-        null_redirect = "2>/dev/null"
-        fallback = (
-            f"'{bat_path}' --style=plain --color=always {item} {null_redirect}"
-            if bat_path else f"cat {item}"
+
+    # Linux / WSL
+    item          = "'{2}'"
+    null_redirect = "2>/dev/null"
+    # fzf 가 preview 컨텍스트에서 export 하는 창 폭. 없으면 80 으로 폴백.
+    width_var = "${FZF_PREVIEW_COLUMNS:-80}"
+
+    # frontmatter(2 개의 '---' 구분자) 이후만 glow 에 파이프 → 본문부터 보임.
+    # awk 미탑재 환경에서는 glow 가 파일 전체를 받는 폴백으로 동작.
+    awk_path = shutil.which("awk")
+    if awk_path:
+        awk_filter = f"awk '/^---$/{{c++;next}} c>=2' {item}"
+        glow_cmd = (
+            f"({awk_filter} | '{glow_path}' -s '{style}' "
+            f"--width {width_var} - {null_redirect})"
         )
-        return f"'{glow_path}' -s '{style}' {item} {null_redirect} || {fallback}"
+    else:
+        glow_cmd = (
+            f"'{glow_path}' -s '{style}' --width {width_var} "
+            f"{item} {null_redirect}"
+        )
+
+    fallback = (
+        f"'{bat_path}' --style=plain --color=always {item} {null_redirect}"
+        if bat_path else f"cat {item}"
+    )
+    return f"{glow_cmd} || {fallback}"
 
 
 def get_editor() -> str:
@@ -1530,6 +1549,84 @@ def auto_update_index(archive_root_path: Path, cfg: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# --doctor 진단 커맨드
+# ---------------------------------------------------------------------------
+
+def _bin_version(path: Optional[str], flag: str = "--version") -> str:
+    """실행 파일의 버전 문자열 한 줄을 반환한다. 실패 시 빈 문자열."""
+    if not path:
+        return ""
+    try:
+        result = subprocess.run(
+            [path, flag], capture_output=True, text=True, timeout=3,
+        )
+        out = (result.stdout or result.stderr or "").strip()
+        return out.splitlines()[0] if out else ""
+    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+        return ""
+
+
+def run_doctor() -> None:
+    """mailview 환경 진단 결과를 stdout 에 출력한다.
+
+    점검 항목:
+      - 플랫폼 / locale / 터미널 환경변수
+      - fzf / glow / bat / awk 경로 및 버전
+      - 아카이브 루트 및 SQLite 인덱스 존재 여부
+      - 한글 입력 체크리스트 (docs/hangul-input.md 참조)
+
+    파일 쓰기 / 네트워크 호출 없음. 읽기 전용 진단.
+    """
+    plat = detect_platform()
+    click.echo("mailview --doctor")
+    click.echo("=" * 60)
+
+    # 플랫폼 정보
+    click.echo(f"Platform       : {plat} ({sys.platform})")
+    click.echo(f"Python         : {sys.version.split()[0]}")
+
+    # 환경변수
+    for key in ("LANG", "LC_CTYPE", "LC_ALL", "TERM", "TERMUX_VERSION"):
+        val = os.environ.get(key, "")
+        mark = "✓" if val else "-"
+        click.echo(f"{key:<15}: {val or '(unset)':<30} {mark}")
+
+    # 바이너리
+    click.echo("-" * 60)
+    for name in ("fzf", "glow", "bat", "awk"):
+        path = shutil.which(name)
+        ver  = _bin_version(path) if path else ""
+        mark = "✓" if path else "⚠"
+        click.echo(f"{name:<15}: {path or '(not found)':<30} {mark}")
+        if ver:
+            click.echo(f"{'':<15}  {ver}")
+
+    # 아카이브 / 인덱스
+    click.echo("-" * 60)
+    try:
+        cfg  = load_config()
+        root = archive_root(cfg)
+        db   = db_path(cfg)
+    except (OSError, ValueError, KeyError) as exc:
+        click.echo(f"archive_root   : 설정 로드 실패 — {exc}")
+    else:
+        click.echo(f"archive_root   : {root}  {'✓' if root.exists() else '⚠ (없음)'}")
+        if db.exists():
+            size_mb = db.stat().st_size / (1024 * 1024)
+            click.echo(f"index.sqlite   : {db} ({size_mb:.1f} MB) ✓")
+        else:
+            click.echo(f"index.sqlite   : {db} ⚠ (없음 — build-index 실행 필요)")
+
+    # 한글 입력 안내
+    click.echo("-" * 60)
+    click.echo("한글 입력 체크리스트:")
+    click.echo("  - 터미널 폰트에 CJK 글리프 포함 (Termux: pkg install noto-cjk)")
+    click.echo("  - IME 가 조합중 문자 전송 모드인지 (Gboard '한국어' 권장)")
+    click.echo("  - TERM 이 xterm-256color / tmux-256color 계열인지")
+    click.echo("  자세한 내용: docs/hangul-input.md")
+
+
+# ---------------------------------------------------------------------------
 # CLI 커맨드
 # ---------------------------------------------------------------------------
 
@@ -1544,6 +1641,7 @@ def auto_update_index(archive_root_path: Path, cfg: dict) -> None:
 @click.option("--archive", default="", help="아카이브 루트")
 @click.option("--dedupe",  is_flag=True, help="중복 메일 감지 및 정리")
 @click.option("--dry-run", "dry_run", is_flag=True, help="--dedupe 와 함께 사용: 삭제 없이 목록만 출력")
+@click.option("--doctor",  is_flag=True, help="환경 진단 (fzf/glow/locale/TERM/아카이브) 출력 후 종료")
 # ── 내부 히든 모드 (fzf execute/reload 에서 호출) ──────────────────────
 @click.option("--open-att",   "_open_att",    default="", hidden=True,
               help="내부용: 지정 MD 파일의 첨부 파일 열기")
@@ -1575,11 +1673,16 @@ def auto_update_index(archive_root_path: Path, cfg: dict) -> None:
               help="내부용: fzf-input 정렬 기준 (date|from|subject)")
 def main(
     query, from_filter, after, before, folder, thread,
-    body_filter, archive, dedupe, dry_run, _open_att, _open_url, _delete_msg,
+    body_filter, archive, dedupe, dry_run, doctor, _open_att, _open_url, _delete_msg,
     _fzf_input, _show_help, _fzf_bulk_delete, _list_folders, _get_thread,
     _tag_msg, _list_tags, tag_filter, _show_stats, _thread_tree, sort,
 ):
     """fzf + glow 인터랙티브 메일 뷰어."""
+
+    # ── --doctor 진단 모드 ───────────────────────────────────────────────
+    if doctor:
+        run_doctor()
+        return
 
     # ── --dedupe 중복 감지 모드 ──────────────────────────────────────────
     if dedupe:
@@ -1982,7 +2085,7 @@ def main(
             "--delimiter", "\t",
             "--with-nth", "1",
             "--header-lines", "1",
-            "--header", "Enter:열람  Tab:선택  Ctrl-B:검색강조  Ctrl-F:폴더  ?:도움말",
+            "--header", "Enter:열람  Tab:선택  Ctrl-B:검색강조  Ctrl-F:폴더  Esc:필터초기화  :q+Enter:종료  ?:도움말",
             # ── 미리보기 ─────────────────────────────────────────────────
             "--preview", preview_cmd,
             "--preview-window", "right:48%:border-left:wrap",
@@ -2004,6 +2107,13 @@ def main(
             ),
             "--bind", (
                 f"ctrl-r:change-prompt(검색> )"
+                f"+reload({reset_reload})"
+                f"+clear-query"
+                f"+change-preview({preview_cmd})"
+            ),
+            # Esc: abort 대신 Ctrl-R 과 동일한 필터 초기화 (메인 뷰어 한정)
+            "--bind", (
+                f"esc:change-prompt(검색> )"
                 f"+reload({reset_reload})"
                 f"+clear-query"
                 f"+change-preview({preview_cmd})"
@@ -2054,6 +2164,17 @@ def main(
             fzf_cmd += ["--bind", f"ctrl-p:execute({bat_cmd})+abort"]
         else:
             fzf_cmd += ["--bind", f"ctrl-p:execute({pager_cmd})+abort"]
+
+        # :q / :quit / :x + Enter → 종료 (vim 스타일).
+        # fzf transform 은 자식 셸 출력을 fzf 액션으로 해석. bash 정규식 의존 → Linux/WSL 전용.
+        if plat in ("linux", "wsl"):
+            fzf_cmd += [
+                "--bind",
+                'enter:transform('
+                r'[[ "$FZF_QUERY" =~ ^:(q|quit|x)$ ]]'
+                ' && echo abort || echo accept'
+                ')',
+            ]
 
         with open(tmp_file.name, encoding="utf-8") as stdin_fh:
             result = subprocess.run(

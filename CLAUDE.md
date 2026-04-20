@@ -242,6 +242,9 @@ pst2md --pst tests/data/test.pst --out ~/mail-archive --dry-run
 pst2md --pst tests/data/test.pst --out ~/mail-archive
 pst2md --pst tests/data/test.pst --out ~/mail-archive --resume
 # 결과: skipped: 4 (중복 변환 없음)
+# 변환 완료 후 자동으로 build-index 가 증분 모드로 실행된다.
+# 건너뛰려면 --no-index (대량 재변환 후 한 번에 --rebuild 할 때 권장)
+pst2md --pst tests/data/test.pst --out ~/mail-archive --no-index
 
 # 출력 경로 config.toml 에 영구 저장
 pst2md --pst /path/to/archive.pst --save-out
@@ -263,6 +266,9 @@ mailgrep "invoice" --body "payment" --json
 
 # 뷰어
 mailview "견적"
+mailview --doctor           # 플랫폼/locale/fzf/glow/bat/awk 진단 출력 후 종료
+# fzf 내부: Esc = 쿼리+필터 초기화 (Ctrl-R 동일), ':q'+Enter = 종료 (Linux/WSL)
+# 한글 입력 문제는 docs/hangul-input.md 참고
 
 # 통계
 mailstat summary
@@ -361,6 +367,11 @@ uv run pst2md --pst /path/to/archive.pst --dry-run
 
 7. **날짜 없는 메시지** (Freebusy 등) 는 `date: null` 로 저장하고
    `archive/undated/` 에 `00000000-0000__<slug>__<hash>.md` 로 저장된다.
+
+8. **pst2md 재변환 후 mailenrich 재호출**: `_clean_md_body()` 가 NBSP/zero-width 문자를
+   정규화하므로 기존 아카이브를 다시 변환하면 body 바이트가 바뀐다 → `llm_hash` 불일치로
+   `mailenrich` 가 LLM 재호출을 요청한다. 예상 비용은 `mailenrich --dry-run` 으로 확인하고,
+   재처리가 필요하면 `mailenrich --force` 로 일괄 재실행한다.
 
 ---
 

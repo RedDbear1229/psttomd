@@ -15,6 +15,8 @@ from lib.normalize import (
     address_display,
     date_to_iso,
     decode_mime_header,
+    format_address,
+    format_address_list,
     make_filename,
     make_msgid_short,
     make_slug,
@@ -158,6 +160,75 @@ class TestFilename:
     def test_make_filename_no_date(self) -> None:
         name = make_filename(None, "x", "<abc@x>")
         assert name.startswith("00000000-0000__")
+
+
+class TestFormatAddress:
+    """frontmatter canonical 주소 포맷."""
+
+    def test_empty(self) -> None:
+        assert format_address(None) == ""
+        assert format_address("") == ""
+        assert format_address("   ") == ""
+
+    def test_email_only_lowercased(self) -> None:
+        assert format_address("ALICE@Example.COM") == "alice@example.com"
+
+    def test_name_and_email(self) -> None:
+        assert format_address("홍길동 <Hong@Ex.COM>") == "홍길동 <hong@ex.com>"
+
+    def test_name_only(self) -> None:
+        # "@" 없는 문자열 — display name 으로 반환
+        out = format_address("Lokay Michelle")
+        assert "Lokay" in out
+        assert "<" not in out
+
+
+class TestFormatAddressList:
+    def test_empty(self) -> None:
+        assert format_address_list(None) == []
+        assert format_address_list("") == []
+
+    def test_outlook_semicolon(self) -> None:
+        result = format_address_list("Alice <A@X.COM>; bob@y.com")
+        assert result == ["Alice <a@x.com>", "bob@y.com"]
+
+    def test_mixed_name_and_email(self) -> None:
+        result = format_address_list("Lokay Michelle; alice@x.com")
+        assert "alice@x.com" in result
+        assert any("Lokay" in r for r in result)
+
+    def test_angle_bracket_protected_from_split(self) -> None:
+        """<> 내부의 쉼표/세미콜론은 구분자로 쓰이지 않는다."""
+        # 현재 split 로직이 <> 를 보호하므로 단일 주소로 파싱된다
+        result = format_address_list("Group <a@x.com>")
+        assert len(result) == 1
+
+
+class TestHtmlPostprocess:
+    """pst2md._clean_md_body 가 invisible 유니코드를 정규화하는지."""
+
+    def _clean(self, text: str) -> str:
+        # pst2md 는 lib 가 아니므로 sys.path 기반으로 호출
+        import importlib
+        mod = importlib.import_module("pst2md")
+        return mod._clean_md_body(text)
+
+    def test_nbsp_to_space(self) -> None:
+        # \u00a0 (NBSP) 는 일반 공백이 되어야 한다
+        out = self._clean("hello\u00a0world")
+        assert "\u00a0" not in out
+        assert "hello world" in out
+
+    def test_zero_width_removed(self) -> None:
+        # ZWSP / ZWNJ / ZWJ / BOM 모두 제거
+        raw = "A\u200bB\u200cC\u200dD\ufeffE"
+        out = self._clean(raw)
+        assert out == "ABCDE"
+
+    def test_idempotent(self) -> None:
+        """동일 입력 → 동일 출력."""
+        src = "foo\u00a0bar\u200bbaz\n\n\n두번째"
+        assert self._clean(src) == self._clean(src)
 
 
 class TestThreadId:

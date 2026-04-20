@@ -192,7 +192,56 @@ def address_display(raw: Optional[str]) -> str:
         return addr or name
     # addr이 비어있거나 "@" 없는 경우: name 또는 raw 원문을 표시명으로 사용
     return name or raw
-    return addr or name
+
+
+def format_address(raw: Optional[str]) -> str:
+    """단일 주소를 frontmatter canonical 형식으로 반환한다.
+
+    frontmatter from / to / cc / reply_to 전체에서 사용하는 공통 포매터.
+    address_display 와 동일 규칙이지만 "from 은 단일 문자열, to/cc 는 배열"
+    같은 타입 분기만 위에서 결정하면 되도록 단일 원소 전용으로 분리.
+
+    규칙:
+      - email 만 있으면:    "email"           (소문자)
+      - 이름 + email:       "이름 <email>"    (email 소문자)
+      - 이름만 있으면:      "이름"            (공백 1칸으로 축약)
+      - 비어 있거나 공백:   ""
+
+    Args:
+        raw: 원시 주소 문자열 (MIME 인코딩 포함 가능).
+
+    Returns:
+        canonical 주소 문자열.
+    """
+    return address_display(raw).strip()
+
+
+def format_address_list(raw: Optional[str]) -> list[str]:
+    """여러 주소를 canonical 형식 리스트로 반환한다.
+
+    parse_address_list 와 동일하게 쉼표·세미콜론(Outlook) 구분을 지원하되,
+    각 원소를 format_address 규칙으로 직렬화한다. 빈 원소는 제외.
+
+    Args:
+        raw: "a@x.com, 홍길동 <b@y.com>; Lokay Michelle" 형태 원문.
+
+    Returns:
+        canonical 주소 문자열 리스트.
+    """
+    if not raw:
+        return []
+    raw = decode_mime_header(raw)
+    # parse_address_list 와 동일한 split 규칙 (<> 내부 보호)
+    parts = re.split(r"[,;](?![^<]*>)", raw)
+    result: list[str] = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        formatted = format_address(part)
+        if formatted:
+            result.append(formatted)
+    return result
 
 
 # ---------------------------------------------------------------------------

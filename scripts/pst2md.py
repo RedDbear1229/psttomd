@@ -40,6 +40,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +60,8 @@ from lib.normalize import (
     normalize_address,
     parse_address_list,
     address_display,
+    format_address,
+    format_address_list,
     normalize_date,
     date_to_iso,
     make_filename,
@@ -121,14 +124,32 @@ def _yaml_str(value: str) -> str:
 
 
 def _make_html2text() -> html2text.HTML2Text:
-    """html2text 변환기 인스턴스를 초기화한다."""
+    """html2text 변환기 인스턴스를 초기화한다.
+
+    동일 입력 → 동일 출력을 보장하도록 주요 옵션을 모두 명시한다.
+    한 번 초기화 후 전역 _h2t 로 재사용하므로 옵션은 영구 고정.
+    """
     h = html2text.HTML2Text()
-    h.ignore_images = False
-    h.ignore_links = False
-    h.body_width = 80   # 0이면 단락 전체가 한 줄 — 80자 줄바꿈으로 가독성 확보
-    h.protect_links = True
-    h.wrap_links = False
+    h.ignore_images     = False
+    h.ignore_links      = False
+    h.body_width        = 80    # 0이면 단락 전체가 한 줄 — 80자 줄바꿈으로 가독성 확보
+    h.protect_links     = True
+    h.wrap_links        = False
+    h.unicode_snob      = True  # smart quotes / em-dash / NBSP 등을 ASCII 로 깎지 않음
+    h.single_line_break = True  # <br> → 단일 줄바꿈 (기본은 빈 줄 삽입)
     return h
+
+
+# 유니코드 정규화: 메일 본문에 섞여 들어오는 invisible / 호환 문자 처리
+# - NBSP(U+00A0) : 일반 공백으로 치환 (grep/검색 일관성)
+# - ZWSP(U+200B) / ZWNJ(U+200C) / ZWJ(U+200D) / BOM(U+FEFF) : 제거
+_ZERO_WIDTH_RE = re.compile("[\u200b\u200c\u200d\ufeff]")
+
+
+def _normalize_unicode(text: str) -> str:
+    """메일 본문의 invisible 유니코드 문자를 정규화한다."""
+    text = text.replace("\u00a0", " ")
+    return _ZERO_WIDTH_RE.sub("", text)
 
 
 _h2t = _make_html2text()
@@ -281,7 +302,10 @@ def _clean_md_body(text: str, wrap_width: int = 80) -> str:
     Returns:
         정리된 Markdown 문자열.
     """
-    # 0) 줄바꿈 정규화 — CRLF/CR → LF (이후 regex 들이 \r 에 걸리지 않도록)
+    # 0) 유니코드 정규화 — NBSP → space, zero-width 문자 제거
+    text = _normalize_unicode(text)
+
+    # 0-1) 줄바꿈 정규화 — CRLF/CR → LF (이후 regex 들이 \r 에 걸리지 않도록)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
     # 1) 노이즈 제거
@@ -524,15 +548,26 @@ def message_to_md(
         subject_raw = decode_mime_header(msg.subject or "")
         subject     = subject_raw.strip() or "(제목 없음)"
 
-        from_raw  = address_display(decode_mime_header(msg.sender_name or ""))
-        from_addr = normalize_address(decode_mime_header(msg.sender_email_address or ""))
+        sender_name  = decode_mime_header(msg.sender_name or "").strip()
+        sender_email = decode_mime_header(msg.sender_email_address or "").strip()
+        from_addr = normalize_address(sender_email)
+
+        # frontmatter from: canonical "이름 <email>" / "email" / "이름" (format_address 규칙)
+        if sender_name and "@" in sender_email:
+            from_fm = format_address(f"{sender_name} <{sender_email}>")
+        else:
+            from_fm = format_address(sender_email or sender_name)
+
+        # body 헤더 블록용 display name (기존 포맷 유지, 본 plan 의 out-of-scope)
+        from_raw  = address_display(sender_name)
         if from_addr and not from_raw:
             from_raw = from_addr
 
         to_raw  = decode_mime_header(msg.display_to or "")
         cc_raw  = decode_mime_header(msg.display_cc or "")
-        to_list = parse_address_list(to_raw)
-        cc_list = parse_address_list(cc_raw)
+        # frontmatter: canonical 포맷 리스트
+        to_list = format_address_list(to_raw)
+        cc_list = format_address_list(cc_raw)
 
         date_val = msg.client_submit_time
         if date_val:
@@ -636,7 +671,7 @@ def message_to_md(
             f'---\n'
             f'msgid: "{_yaml_str(msgid)}"\n'
             f'date: {date_to_iso(dt) or "null"}\n'
-            f'from: "{_yaml_str(from_raw)}"\n'
+            f'from: "{_yaml_str(from_fm)}"\n'
             f'to: {to_yaml}\n'
             f'cc: {cc_yaml}\n'
             f'subject: "{_yaml_str(subject)}"\n'
@@ -680,7 +715,7 @@ def message_to_md(
         meta = {
             "msgid":         msgid,
             "date":          date_to_iso(dt),
-            "from":          from_raw,
+            "from":          from_fm,
             "from_addr":     from_addr,
             "to":            to_list,
             "cc":            cc_list,
@@ -987,6 +1022,11 @@ def main() -> None:
         action="store_true",
         help="--out 경로를 ~/.pst2md/config.toml 에 영구 저장",
     )
+    parser.add_argument(
+        "--no-index",
+        action="store_true",
+        help="변환 후 자동 build-index(증분)를 건너뛴다",
+    )
     args = parser.parse_args()
 
     if args.backend:
@@ -1027,6 +1067,27 @@ def main() -> None:
 
     if args.dry_run:
         print("\n[dry-run] 파일은 생성되지 않았습니다.")
+        return
+
+    # ── 자동 증분 인덱싱 (opt-out: --no-index) ──────────────────────────
+    if args.no_index:
+        print("\n[auto-index] --no-index 지정됨 — 인덱싱 건너뜀")
+        print("  수동 실행: build-index --archive", out_root)
+        return
+
+    staging = out_root / "index_staging.jsonl"
+    if not staging.exists():
+        # resume 에서 신규 변환이 없었거나 변환 전부 실패한 경우
+        return
+
+    print("\n[auto-index] 증분 인덱싱 중... (중단 시 Ctrl-C, 수동 복구: build-index --archive)")
+    try:
+        from build_index import run_incremental
+        n = run_incremental(out_root)
+        print(f"[auto-index] 삽입: {n:,}개")
+    except (OSError, sqlite3.Error, RuntimeError) as e:
+        print(f"[auto-index] 실패: {e}")
+        print(f"  수동 실행: build-index --archive {out_root}")
 
 
 if __name__ == "__main__":

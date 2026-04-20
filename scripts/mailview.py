@@ -415,17 +415,22 @@ def build_fzf_preview_cmd(
     glow_path: str,
     bat_path: Optional[str],
     glow_style: str = "",
+    *,
+    mdcat_path: Optional[str] = None,
+    viewer: str = "glow",
 ) -> str:
     """플랫폼에 맞는 fzf --preview 명령어 문자열을 생성한다.
 
     fzf 입력 형식: "레이블\\t파일경로" — {2} 가 경로를 가리킨다.
 
-    우선순위: glow(마크다운 렌더링·컬러) → bat(구문 강조) → type/cat(플레인)
-    bat 은 Ctrl-P 원문 보기 전용으로 분리한다.
+    뷰어 선택:
+      - glow  (기본): 마크다운 렌더링·컬러. 이미지는 텍스트 링크로만 표시.
+      - mdcat       : Kitty/WezTerm/iTerm2/sixel(Windows Terminal 1.22+) 등
+                      그래픽 지원 터미널에서 첨부/원격 이미지를 인라인 렌더.
+                      비지원 터미널에서는 텍스트 자리표시자로 출력.
+                      `--local-only` 를 강제해 원격 fetch 는 차단.
 
-    glow 스타일 결정:
-      glow_style 인자 → scripts/lib/mocha-glow.json 자동 탐지 → dark 폴백
-      (resolve_glow_style() 위임)
+    폴백 체인: 선택 뷰어 → bat(구문 강조) → type/cat(플레인).
 
     경로 인용부호 전략:
       - Linux  : {2} 를 작은따옴표로 감쌈 → 공백·특수문자 안전
@@ -435,12 +440,15 @@ def build_fzf_preview_cmd(
         glow_path:  glow 실행 파일 절대 경로.
         bat_path:   bat 실행 파일 절대 경로 (없으면 None).
         glow_style: config 에서 전달된 스타일 값 (빈 문자열이면 자동 결정).
+        mdcat_path: mdcat 실행 파일 절대 경로 (viewer='mdcat' 일 때만 유효).
+        viewer:     "glow" | "mdcat" (config mailview.preview_viewer).
 
     Returns:
         fzf --preview 옵션에 전달할 명령어 문자열.
     """
     plat  = detect_platform()
     style = resolve_glow_style(glow_style)
+    use_mdcat = viewer == "mdcat" and mdcat_path is not None
 
     if plat == "windows":
         item          = '"{2}"'
@@ -449,7 +457,14 @@ def build_fzf_preview_cmd(
             f'"{bat_path}" --style=plain --color=always {item} {null_redirect}'
             if bat_path else f'type {item}'
         )
-        return f'"{glow_path}" -s "{style}" {item} {null_redirect} || {fallback}'
+        if use_mdcat:
+            primary = (
+                f'"{mdcat_path}" --local-only '
+                f'--columns %FZF_PREVIEW_COLUMNS% {item} {null_redirect}'
+            )
+        else:
+            primary = f'"{glow_path}" -s "{style}" {item} {null_redirect}'
+        return f'{primary} || {fallback}'
 
     # Linux / WSL
     item          = "'{2}'"
@@ -457,17 +472,29 @@ def build_fzf_preview_cmd(
     # fzf 가 preview 컨텍스트에서 export 하는 창 폭. 없으면 80 으로 폴백.
     width_var = "${FZF_PREVIEW_COLUMNS:-80}"
 
-    # frontmatter(2 개의 '---' 구분자) 이후만 glow 에 파이프 → 본문부터 보임.
-    # awk 미탑재 환경에서는 glow 가 파일 전체를 받는 폴백으로 동작.
+    # frontmatter(2 개의 '---' 구분자) 이후만 뷰어에 파이프 → 본문부터 보임.
+    # awk 미탑재 환경에서는 뷰어가 파일 전체를 받는 폴백으로 동작.
     awk_path = shutil.which("awk")
-    if awk_path:
+    if use_mdcat:
+        if awk_path:
+            awk_filter = f"awk '/^---$/{{c++;next}} c>=2' {item}"
+            primary = (
+                f"({awk_filter} | '{mdcat_path}' --local-only "
+                f"--columns {width_var} - {null_redirect})"
+            )
+        else:
+            primary = (
+                f"'{mdcat_path}' --local-only --columns {width_var} "
+                f"{item} {null_redirect}"
+            )
+    elif awk_path:
         awk_filter = f"awk '/^---$/{{c++;next}} c>=2' {item}"
-        glow_cmd = (
+        primary = (
             f"({awk_filter} | '{glow_path}' -s '{style}' "
             f"--width {width_var} - {null_redirect})"
         )
     else:
-        glow_cmd = (
+        primary = (
             f"'{glow_path}' -s '{style}' --width {width_var} "
             f"{item} {null_redirect}"
         )
@@ -476,7 +503,7 @@ def build_fzf_preview_cmd(
         f"'{bat_path}' --style=plain --color=always {item} {null_redirect}"
         if bat_path else f"cat {item}"
     )
-    return f"{glow_cmd} || {fallback}"
+    return f"{primary} || {fallback}"
 
 
 def get_editor() -> str:
@@ -1599,7 +1626,7 @@ def run_doctor() -> None:
 
     # 바이너리
     click.echo("-" * 60)
-    for name in ("fzf", "glow", "bat", "awk"):
+    for name in ("fzf", "glow", "mdcat", "bat", "awk"):
         path = shutil.which(name)
         ver  = _bin_version(path) if path else ""
         mark = "✓" if path else "⚠"
@@ -1863,7 +1890,20 @@ def main(
         tmp_file.close()
 
         cfg_glow_style = cfg.get("mailview", {}).get("glow_style", "")
-        preview_cmd  = build_fzf_preview_cmd(glow_path, bat_path, cfg_glow_style)
+        cfg_viewer     = cfg.get("mailview", {}).get("preview_viewer", "glow").lower()
+        mdcat_path: Optional[str] = None
+        if cfg_viewer == "mdcat":
+            mdcat_path = _check_tool("mdcat", cfg)
+            if not mdcat_path:
+                click.echo(
+                    "경고: preview_viewer='mdcat' 인데 mdcat 바이너리를 찾을 수 없음 → glow 로 폴백",
+                    err=True,
+                )
+                cfg_viewer = "glow"
+        preview_cmd  = build_fzf_preview_cmd(
+            glow_path, bat_path, cfg_glow_style,
+            mdcat_path=mdcat_path, viewer=cfg_viewer,
+        )
         _glow_style  = resolve_glow_style(cfg_glow_style)
         editor       = get_editor()
         script_path  = str(Path(__file__).resolve())

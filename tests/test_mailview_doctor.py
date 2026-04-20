@@ -93,3 +93,49 @@ class TestPreviewCmd:
         cmd = build_fzf_preview_cmd("C:/glow.exe", None, "dark")
         assert "awk" not in cmd
         assert "FZF_PREVIEW_COLUMNS" not in cmd
+
+    def test_preview_mdcat_viewer_linux(self, monkeypatch) -> None:
+        """viewer='mdcat' 이면 glow 대신 mdcat 을 파이프에 사용한다."""
+        import mailview as mv
+        monkeypatch.setattr(mv, "detect_platform", lambda: "linux")
+        monkeypatch.setattr(
+            mv.shutil, "which",
+            lambda name: "/usr/bin/awk" if name == "awk" else None,
+        )
+        cmd = build_fzf_preview_cmd(
+            "/usr/bin/glow", None, "dark",
+            mdcat_path="/usr/bin/mdcat", viewer="mdcat",
+        )
+        assert "/usr/bin/mdcat" in cmd
+        assert "--local-only" in cmd
+        assert "--columns" in cmd
+        assert "FZF_PREVIEW_COLUMNS" in cmd
+        # glow 는 primary 로 등장하지 않는다 (fallback 에도 아님 — 폴백은 bat/cat).
+        assert "'/usr/bin/glow'" not in cmd
+
+    def test_preview_mdcat_fallback_to_glow_when_missing(self, monkeypatch) -> None:
+        """mdcat_path=None 이면 viewer 지정이 있어도 glow 로 폴백한다."""
+        import mailview as mv
+        monkeypatch.setattr(mv, "detect_platform", lambda: "linux")
+        monkeypatch.setattr(
+            mv.shutil, "which",
+            lambda name: "/usr/bin/awk" if name == "awk" else None,
+        )
+        cmd = build_fzf_preview_cmd(
+            "/usr/bin/glow", None, "dark",
+            mdcat_path=None, viewer="mdcat",
+        )
+        assert "mdcat" not in cmd
+        assert "/usr/bin/glow" in cmd
+
+    def test_preview_mdcat_windows(self, monkeypatch) -> None:
+        """Windows 에서도 mdcat 경로가 있으면 cmd.exe 환경변수 문법으로 전달."""
+        import mailview as mv
+        monkeypatch.setattr(mv, "detect_platform", lambda: "windows")
+        cmd = build_fzf_preview_cmd(
+            "C:/glow.exe", None, "dark",
+            mdcat_path="C:/mdcat.exe", viewer="mdcat",
+        )
+        assert "mdcat.exe" in cmd
+        assert "%FZF_PREVIEW_COLUMNS%" in cmd
+        assert "--local-only" in cmd

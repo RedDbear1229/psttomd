@@ -271,9 +271,13 @@ mailgrep "invoice" --body "payment" --json
 
 # 뷰어
 mailview "견적"
-mailview --doctor           # 플랫폼/locale/fzf/glow/bat/awk 진단 출력 후 종료
+mailview --doctor           # 플랫폼/locale/fzf/glow/mdcat/bat/awk 진단 출력 후 종료
 # fzf 내부: Esc = 쿼리+필터 초기화 (Ctrl-R 동일), ':q'+Enter = 종료 (Linux/WSL)
 # 한글 입력 문제는 docs/hangul-input.md 참고
+# 인라인 이미지 preview (Kitty/WezTerm/iTerm2/Windows Terminal 1.22+ sixel):
+#   config.toml:  [mailview]
+#                 preview_viewer = "mdcat"
+#   `cargo install mdcat` 또는 `brew install mdcat` 로 설치
 
 # 통계
 mailstat summary

@@ -21,6 +21,9 @@
    - [enrich — Obsidian 위키화](#76-enrich--obsidian-위키화)
    - [verify — 무결성 검증](#77-verify--무결성-검증)
    - [archive-monthly — 월간 배치](#78-archive-monthly--월간-배치)
+   - [pst2md-config — 설정 관리](#79-pst2md-config--설정-관리)
+   - [mailenrich — LLM 요약/태그](#710-mailenrich--llm-요약태그)
+   - [mailenrich-config — LLM 설정](#711-mailenrich-config--llm-설정)
 8. [Obsidian 연동](#8-obsidian-연동)
 9. [아카이브 구조 및 Markdown 스키마](#9-아카이브-구조-및-markdown-스키마)
 10. [월간 운영 절차](#10-월간-운영-절차)
@@ -52,14 +55,19 @@ Markdown 아카이브 + SQLite FTS5 인덱스
 mailview                mailgrep
 (fzf + glow)            (FTS5 검색)
     │
-    ▼
-Obsidian Vault
-(그래프·위키·Dataview)
+    ├──▶ Obsidian Vault
+    │    (그래프·위키·Dataview)
+    │
+    └──▶ mailenrich (선택)
+         LLM 요약 / 태그 / 관련문서 백링크
+         (OpenAI · Anthropic · Ollama)
 ```
 
 - 최근 12개월 메일만 Outlook/PST에 유지 → PST 10~15GB 수준으로 축소
 - 이전 메일은 Markdown 아카이브에서 ripgrep·FTS5로 밀리초 단위 검색
 - 모든 메일이 일반 텍스트 파일 → 백업·버전관리·스크립트 처리 가능
+- (선택) `mailenrich` 로 각 메일에 LLM 요약·의미 태그·관련 스레드 링크를
+  frontmatter 에 자동 주입 → Obsidian Dataview 검색·정렬 품질 향상
 
 ### 지원 환경
 
@@ -822,6 +830,219 @@ archive-monthly --pst <경로> [옵션]
 1. 변환된 날짜 범위의 메일 선택 → 삭제 (예: 2022년 이전 메일)
 2. `파일` → `계정 설정` → `데이터 파일` 탭 → 해당 PST 선택 → `설정` → `지금 압축`
 3. Outlook 재기동 후 PST 크기 확인
+
+---
+
+### 7.9 pst2md-config — 설정 관리
+
+`~/.pst2md/config.toml` 을 명령행으로 조회·수정합니다. 에디터를
+열지 않고 아카이브 경로·백엔드·도구 경로를 빠르게 바꿀 수 있습니다.
+
+#### 기본 사용법
+
+```bash
+# 현재 설정 출력
+pst2md-config show
+
+# 출력(아카이브) 루트 경로 설정
+pst2md-config set-output ~/mail-archive
+pst2md-config set-output "C:/Users/YOU/mail-archive"   # Windows
+
+# 설정 파일 없을 때 기본 템플릿 생성
+pst2md-config init
+pst2md-config init --force                             # 기존 덮어쓰기
+
+# 초기화 시 옵션 지정
+pst2md-config init --archive ~/mail-archive --backend pypff
+```
+
+#### 하위 명령 전체
+
+| 명령 | 설명 |
+|---|---|
+| `show` | 현재 config 전체 및 실제 적용값 확인 (archive.root, pst_backend, tools.*) |
+| `set-output PATH` | `archive.root` 를 업데이트. `~` 자동 확장, 디렉터리 자동 생성 |
+| `init` | `~/.pst2md/config.toml` 이 없으면 example 을 복사. `--force` 로 덮어쓰기 |
+
+#### pst2md 변환 시 함께 저장하기
+
+변환 커맨드에서 `--save-out` 을 붙이면 `--out` 값이 config 에 저장되어
+다음부터는 `--out` 생략 가능:
+
+```bash
+# 최초 1회: 변환 + 경로 저장
+pst2md --pst /path/to/archive.pst --out ~/mail-archive --save-out
+
+# 이후부터는 --out 없이 실행
+pst2md --pst /path/to/archive2.pst
+```
+
+#### 설정 파일 위치
+
+| 플랫폼 | 경로 |
+|---|---|
+| Linux/WSL | `~/.pst2md/config.toml` |
+| Windows   | `%USERPROFILE%\.pst2md\config.toml` |
+| 오버라이드 | `PST2MD_CONFIG` 환경변수로 경로 직접 지정 가능 |
+
+---
+
+### 7.10 mailenrich — LLM 요약/태그
+
+LLM 을 호출해 각 메일 MD 파일의 frontmatter 에 `summary`, `llm_tags`,
+`related` 등 의미 메타데이터를 채우고, body 뒤에 `## 요약 (LLM)` 블록을
+추가합니다. 본문(body) 자체는 바이트 단위로 불변 (`llm_hash` 로 감시).
+
+#### 시작 흐름 (Ollama 로컬, 무료)
+
+```bash
+# 1. 의존성 추가 (이미 설치 안 되었으면)
+pip install 'pst2md[mailenrich]'                   # pip 환경
+uv sync --group dev --extra mailenrich             # uv 환경
+
+# 2. Ollama 서버 실행 (별도 터미널)
+ollama serve
+ollama pull llama3.1:8b
+
+# 3. provider 지정
+mailenrich-config set-provider ollama
+mailenrich-config set-endpoint http://localhost:11434
+mailenrich-config set-model llama3.1:8b
+
+# 4. 예상 토큰·대상 확인 (LLM 호출 없음)
+mailenrich --dry-run --limit 10
+
+# 5. 실제 처리
+mailenrich --limit 10
+```
+
+#### 시작 흐름 (OpenAI / Anthropic)
+
+```bash
+# 토큰은 환경변수 로 전달 (권장 — config 파일에 평문 저장 지양)
+export LLM_TOKEN=sk-xxxxx
+
+mailenrich-config set-provider openai
+mailenrich-config set-model gpt-4o-mini     # 저비용
+mailenrich --dry-run                         # 비용·토큰 예상
+mailenrich --budget-usd 1.0 --limit 100      # 1달러 상한, 100개만
+```
+
+#### 자주 쓰는 옵션
+
+```
+mailenrich [옵션]
+
+  --archive PATH        아카이브 루트 (기본: config.toml)
+  --since YYYY-MM-DD    시작 날짜(포함)
+  --until YYYY-MM-DD    종료 날짜(포함)
+  --folder NAME         처리할 폴더 (여러 번 가능)
+  --limit N             처리 상한 (0=무제한)
+  --dry-run             LLM 호출 없이 토큰/비용 예상만
+  --force               llm_hash 무시하고 재호출 (본문 변경 시)
+  --budget-usd FLOAT    누적 비용 한도 (0=무제한)
+  --concurrency N       동시 호출 수 (0=config 값)
+  -v, --verbose         상세 로그 출력
+```
+
+#### 멱등성과 재처리
+
+- `body_hash = sha256(body)` 를 frontmatter `llm_hash` 로 저장 → body 가
+  바뀌지 않으면 자동 skip
+- **pst2md 재변환으로 body 가 바뀐 경우** (예: `_clean_md_body` 업데이트로
+  NBSP/zero-width 정규화 적용): `mailenrich --force` 로 일괄 재처리
+- 스킵된 파일은 `skipped`, 실패는 `errors.log` 에 기록
+
+#### 생성되는 frontmatter 예
+
+```yaml
+---
+msgid: "<abc@x>"
+subject: "견적서 회신"
+# ... 기존 키
+summary: "엔지니어링 견적 검토 후 단가 재산정 요청. 2주 내 응답 필요."
+llm_tags: [견적, 협상, 긴급]
+related: [t_4a9f3c2b, t_7e2d1f0a]
+llm_hash: "b3c9..."
+llm_at: "2026-04-20T10:12:33+00:00"
+llm_model: "gpt-4o-mini"
+---
+```
+
+#### 비용 관리 팁
+
+1. **dry-run 먼저**: `mailenrich --dry-run --since 2024-01-01` 으로 총
+   예상 비용 확인
+2. **folder 필터**: `--folder Inbox --folder Sent` 로 필요한 폴더만
+3. **Ollama 로 선험**: 로컬 모델로 프롬프트·요약 품질 검증 후 유료 API
+4. **예산 한도**: `--budget-usd 5.0` 로 초과 시 자동 중단
+
+---
+
+### 7.11 mailenrich-config — LLM 설정
+
+`~/.pst2md/config.toml` 의 `[llm]` 섹션 전용 관리 CLI.
+
+#### 기본 사용법
+
+```bash
+# 현재 LLM 설정 확인 (토큰은 마스킹 표시)
+mailenrich-config show
+
+# provider 변경
+mailenrich-config set-provider ollama       # 로컬 (무료)
+mailenrich-config set-provider openai
+mailenrich-config set-provider anthropic
+
+# 엔드포인트 / 모델
+mailenrich-config set-endpoint http://localhost:11434
+mailenrich-config set-model llama3.1:8b
+mailenrich-config set-model gpt-4o-mini
+mailenrich-config set-model claude-haiku-4-5-20251001
+
+# 토큰 (권장: 환경변수 LLM_TOKEN 사용, 이 명령은 로컬 전용 편의 기능)
+mailenrich-config set-token sk-xxxxx
+
+# [llm] 섹션이 없을 때 기본 템플릿 추가
+mailenrich-config init
+mailenrich-config init --force              # 기존 섹션 덮어쓰기
+```
+
+#### 하위 명령 전체
+
+| 명령 | 설명 |
+|---|---|
+| `show` | provider/endpoint/model/token(마스킹)/timeout/concurrency 및 `[llm.scope]` 출력 |
+| `set-provider {openai,anthropic,ollama}` | provider 변경 |
+| `set-endpoint URL` | API base URL |
+| `set-model NAME` | 모델 이름 |
+| `set-token TOKEN` | API 토큰 (env `LLM_TOKEN` 이 우선) |
+| `init [--force]` | `[llm]` + `[llm.scope]` 기본 섹션 주입 |
+
+#### 토큰 우선순위
+
+**env `LLM_TOKEN` > config.toml `[llm].token`**
+
+보안상 토큰은 환경변수를 권장합니다:
+
+```bash
+# 영구 적용 (bash)
+echo 'export LLM_TOKEN=sk-xxxxx' >> ~/.bashrc
+
+# 세션 한정
+export LLM_TOKEN=sk-xxxxx
+
+# config 파일에 저장할 수밖에 없다면
+chmod 600 ~/.pst2md/config.toml
+```
+
+#### Provider 별 체크리스트
+
+| Provider | endpoint 기본 | 추천 model | 토큰 필요 |
+|---|---|---|---|
+| openai | `https://api.openai.com/v1` | `gpt-4o-mini` | ✓ |
+| anthropic | `https://api.anthropic.com` | `claude-haiku-4-5-20251001` | ✓ |
+| ollama | `http://localhost:11434` | `llama3.1:8b` · `qwen2.5:7b` | ✗ |
 
 ---
 

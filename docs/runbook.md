@@ -128,6 +128,61 @@ uv run enrich --projects  # 프로젝트 페이지만
 
 ---
 
+## LLM enrichment (mailenrich — 선택)
+
+아카이브 MD 파일에 `summary` / `llm_tags` / `related` / `llm_hash`
+메타데이터를 채우고 body 뒤에 요약 블록을 추가합니다. 본문 바이트는
+불변(`llm_hash` 로 감시).
+
+### 최초 설정
+
+```bash
+# 의존성 설치 (httpx 등)
+uv sync --group dev --extra mailenrich        # uv 환경
+pip install 'pst2md[mailenrich]'              # pip 환경
+
+# provider 선택 (Ollama 로컬 무료 권장 — 첫 테스트)
+ollama serve &
+ollama pull llama3.1:8b
+mailenrich-config set-provider ollama
+mailenrich-config set-endpoint http://localhost:11434
+mailenrich-config set-model llama3.1:8b
+
+# 또는 OpenAI/Anthropic
+export LLM_TOKEN=sk-xxxxx                     # env 우선 (권장)
+mailenrich-config set-provider openai
+mailenrich-config set-model gpt-4o-mini
+
+# 현재 설정 확인
+mailenrich-config show
+```
+
+### 실행
+
+```bash
+# 1. dry-run 으로 예상 토큰·비용 확인 (LLM 호출 없음)
+mailenrich --dry-run --since 2024-01-01
+
+# 2. 소규모 시범 실행
+mailenrich --limit 10 --verbose
+
+# 3. 본 실행 (예산 한도 1$)
+mailenrich --budget-usd 1.0 --since 2024-01-01
+
+# 4. pst2md 재변환으로 body 바뀐 경우 재처리
+mailenrich --force
+```
+
+### 체크리스트
+
+- [ ] `mailenrich-config show` 로 provider/endpoint/model 이 의도대로
+- [ ] `--dry-run` 예상 비용이 감당 가능한 수준
+- [ ] OpenAI/Anthropic 의 경우 `LLM_TOKEN` 이 env 에 설정됨
+- [ ] `--budget-usd` 로 상한 설정
+- [ ] 대량 처리 시 `--concurrency` 를 CPU 코어 × 2 이하로
+
+---
+
 ## 무결성 검증
 
 ```bash

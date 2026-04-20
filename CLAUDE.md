@@ -23,7 +23,7 @@ pst2md/
 │   ├── mailenrich.py        # LLM enrichment CLI (요약 / 태그 / 백링크)
 │   ├── mailenrich_config.py # mailenrich-config CLI (provider/endpoint/model/token)
 │   ├── mailgrep.py          # click CLI: FTS5 전문 검색
-│   ├── mailview.py          # click CLI: fzf + glow 인터랙티브 뷰어
+│   ├── mailview.py          # click CLI: fzf + glow/mdcat 인터랙티브 뷰어
 │   ├── mailstat.py          # click CLI: 아카이브 통계
 │   ├── archive_monthly.py   # 월간 PST 배치 (크로스플랫폼)
 │   ├── verify_integrity.py  # MD 파일 무결성 검증
@@ -276,10 +276,10 @@ mailview "견적"
 mailview --doctor           # 플랫폼/locale/fzf/glow/mdcat/bat/awk 진단 출력 후 종료
 # fzf 내부: Esc = 쿼리+필터 초기화 (Ctrl-R 동일), ':q'+Enter = 종료 (Linux/WSL)
 # 한글 입력 문제는 docs/hangul-input.md 참고
-# 인라인 이미지 preview (Kitty/WezTerm/iTerm2/Windows Terminal 1.22+ sixel):
-#   config.toml:  [mailview]
-#                 preview_viewer = "mdcat"
-#   `cargo install mdcat` 또는 `brew install mdcat` 로 설치
+# 인라인 이미지 (Kitty/WezTerm/iTerm2/Windows Terminal 1.22+ sixel):
+#   pst2md-config set mdcat  — preview + Enter 전체 열람 양쪽 모두 mdcat 사용.
+#   Enter 렌더링은 pager 미사용(less 경유 시 그래픽 깨짐) — 터미널 스크롤로 이동.
+#   `cargo install mdcat` 또는 `brew install mdcat` 로 설치.
 
 # 통계
 mailstat summary

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-mailview — fzf + glow 인터랙티브 메일 뷰어 (크로스플랫폼)
+mailview — fzf + glow/mdcat 인터랙티브 메일 뷰어 (크로스플랫폼)
 
 사용법:
   mailview               # 최근 100통 목록
@@ -8,11 +8,18 @@ mailview — fzf + glow 인터랙티브 메일 뷰어 (크로스플랫폼)
   mailview --thread t_abc123
 
 키 바인딩 (fzf):
-  Enter   → glow 로 전체 열람
+  Enter   → mailview.preview_viewer 설정에 따라 glow(기본) 또는 mdcat 으로 전체 열람
   Ctrl-P  → bat/less 로 원문 표시
   Ctrl-O  → $EDITOR / notepad 로 열기
   Ctrl-A  → 첨부 파일 목록 표시 및 열기
   ESC     → 종료
+
+뷰어 선택 (config.toml [mailview] preview_viewer):
+  - glow  (기본) : 컬러 마크다운 + pager. 이미지는 텍스트 링크로만 표시.
+  - mdcat        : Kitty/WezTerm/iTerm2 그래픽 프로토콜 또는 sixel(Windows
+                   Terminal 1.22+) 지원 터미널에서 마크다운 내 이미지를 인라인 렌더.
+                   pager 없이 stdout 직접 출력(less 경유 시 이미지가 깨짐).
+  `pst2md-config set glow|mdcat` 로 전환.
 
 첨부 파일 열기 (Ctrl-A):
   - 첨부가 1개  : 즉시 OS 기본 앱으로 열림
@@ -129,7 +136,7 @@ _HELP_LINES: list[str] = [
     "",
     "   키 바인딩 — mailview",
     "   " + "─" * 44,
-    "   Enter      메일 열람 (glow 렌더링)",
+    "   Enter      메일 열람 (glow/mdcat — config preview_viewer)",
     "   Ctrl-P     원문 표시 (bat / less)",
     "   Ctrl-O     $EDITOR 로 열기",
     "   Ctrl-A     첨부 파일 목록 열기",
@@ -409,6 +416,42 @@ def resolve_glow_style(cfg_style: str) -> str:
     if bundled.is_file():
         return str(bundled)
     return "dark"
+
+
+def build_full_viewer_cmd(
+    selected_path: str,
+    glow_path: str,
+    glow_style: str,
+    *,
+    mdcat_path: Optional[str] = None,
+    viewer: str = "glow",
+) -> list[str]:
+    """Enter 로 선택된 메일을 렌더링할 subprocess argv 를 반환한다.
+
+    뷰어 선택:
+      - viewer="glow"  → ``glow -p -s <style> <path>``
+        pager(less) 사용. 이미지는 텍스트 링크로만 표시.
+      - viewer="mdcat" + mdcat_path 존재
+        → ``mdcat --local-only <path>``
+        pager 미사용(less 경유 시 이미지 렌더링이 깨지므로 직접 stdout 출력).
+        Kitty/WezTerm/iTerm2 그래픽 프로토콜 또는 sixel(Windows Terminal 1.22+)
+        지원 터미널에서 마크다운 내 이미지가 인라인으로 렌더링된다.
+        ``--local-only`` 로 원격 이미지 fetch 는 차단(트래킹 픽셀 방어).
+      - viewer="mdcat" + mdcat_path=None → glow 로 폴백.
+
+    Args:
+        selected_path: 렌더링할 MD 파일 경로.
+        glow_path:     glow 실행 파일 절대 경로.
+        glow_style:    resolve_glow_style() 결과 (이미 확정된 스타일/파일).
+        mdcat_path:    mdcat 실행 파일 절대 경로 (viewer='mdcat' 일 때만 유효).
+        viewer:        "glow" | "mdcat".
+
+    Returns:
+        subprocess.run 에 그대로 넘길 argv 리스트.
+    """
+    if viewer == "mdcat" and mdcat_path:
+        return [mdcat_path, "--local-only", selected_path]
+    return [glow_path, "-p", "-s", glow_style, selected_path]
 
 
 def build_fzf_preview_cmd(
@@ -2231,14 +2274,22 @@ def main(
                 encoding="utf-8",
             )
 
-        # Enter 로 선택된 메일을 glow 로 렌더링
+        # Enter 로 선택된 메일 렌더링 — config mailview.preview_viewer 에 따라
+        # glow(기본) 또는 mdcat(이미지 인라인)로 분기.
         if result.returncode == 0:
             selected_line = (result.stdout or "").strip()
             if "\t" in selected_line:
                 selected_path = selected_line.split("\t", 1)[1].strip()
                 if selected_path and Path(selected_path).exists():
                     glow_style = resolve_glow_style(cfg_glow_style)
-                    subprocess.run([glow_path, "-p", "-s", glow_style, selected_path])
+                    viewer_cmd = build_full_viewer_cmd(
+                        selected_path,
+                        glow_path,
+                        glow_style,
+                        mdcat_path=mdcat_path,
+                        viewer=cfg_viewer,
+                    )
+                    subprocess.run(viewer_cmd)
 
     finally:
         Path(tmp_file.name).unlink(missing_ok=True)

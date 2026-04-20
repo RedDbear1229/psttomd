@@ -558,7 +558,7 @@ mailgrep "subject:견적서"
 
 ### 7.2 mailview — 인터랙티브 뷰어
 
-fzf로 메일을 선택하고 glow로 렌더링합니다.
+fzf로 메일을 선택하고 glow 또는 mdcat 으로 렌더링합니다.
 
 #### 기본 사용법
 
@@ -577,7 +577,7 @@ mailview "계약" --from 홍길동 --after 2024-01-01
 
 | 키 | 동작 |
 |---|---|
-| `Enter` | 선택한 메일을 glow로 전체 열람 |
+| `Enter` | 선택한 메일을 렌더링 (viewer = glow 또는 mdcat — 아래 참고) |
 | `Ctrl-P` | bat/less로 frontmatter 포함 원문 표시 |
 | `Ctrl-O` | `$EDITOR` (Linux) / `notepad` (Windows)로 열기 |
 | `↑↓` | 목록 이동 |
@@ -586,7 +586,41 @@ mailview "계약" --from 홍길동 --after 2024-01-01
 | `:q`+Enter | 종료 (Linux/WSL 전용, vim 스타일) |
 
 오른쪽 패널에 선택 메일 미리보기가 실시간으로 표시됩니다.
-미리보기는 YAML frontmatter 를 숨기고 본문부터 glow 로 렌더링합니다 (`awk` 필요).
+미리보기는 YAML frontmatter 를 숨기고 본문부터 렌더링합니다 (`awk` 필요).
+
+#### 뷰어 선택 (미리보기 + Enter)
+
+`config.toml [mailview] preview_viewer` 한 값이 **미리보기와 Enter 전체 열람**
+양쪽 모두를 결정합니다.
+
+| 값 | 미리보기 | Enter 전체 열람 | 이미지 |
+|---|---|---|---|
+| `glow` (기본) | glow 파이프 | `glow -p`(pager) | 텍스트 링크만 |
+| `mdcat` | `mdcat --local-only --columns $FZF_PREVIEW_COLUMNS` | `mdcat --local-only` (pager 미사용) | 인라인 렌더 |
+
+```bash
+pst2md-config set glow           # 기본. 컬러 마크다운 + pager
+pst2md-config set mdcat          # 이미지 인라인 (이미지 지원 터미널 필요)
+```
+
+**이미지 렌더링 조건** (mdcat):
+
+- 지원 터미널: Kitty, WezTerm, iTerm2, Windows Terminal 1.22+(sixel),
+  xterm+sixel, mlterm. 이외 터미널에서는 자리표시자 텍스트만 보입니다
+  (에러 없이 동작).
+- `mdcat --local-only` 는 원격 이미지 fetch 를 차단 → 트래킹 픽셀 방어.
+  메일의 첨부/임베디드 이미지(`pst2md` 가 로컬로 저장)는 정상 표시.
+- Enter 렌더링은 pager 를 쓰지 않고 stdout 으로 직접 출력합니다
+  (less 경유 시 그래픽 코드가 깨지기 때문). 스크롤은 터미널 기본 기능 사용.
+
+설치:
+
+```bash
+cargo install mdcat          # Linux/WSL/Windows
+brew install mdcat           # macOS
+sudo apt install mdcat       # 최신 Debian/Ubuntu
+winget install mdcat         # Windows
+```
 
 #### 진단 / 한글 입력 문제
 

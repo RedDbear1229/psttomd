@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 import sqlite3
 
 from mailview import (
+    build_full_viewer_cmd,
     build_fzf_preview_cmd,
     resolve_glow_style,
     get_editor,
@@ -98,6 +99,52 @@ class TestBuildFzfPreviewCmd:
         with patch("mailview.detect_platform", return_value="wsl"):
             cmd = build_fzf_preview_cmd("/usr/bin/glow", None)
         assert "'{2}'" in cmd
+
+
+# ---------------------------------------------------------------------------
+# build_full_viewer_cmd — Enter 로 전체 열람할 때의 argv
+# ---------------------------------------------------------------------------
+
+class TestBuildFullViewerCmd:
+    def test_default_uses_glow_with_pager(self):
+        cmd = build_full_viewer_cmd(
+            "/tmp/mail.md", "/usr/bin/glow", "dark",
+        )
+        assert cmd == ["/usr/bin/glow", "-p", "-s", "dark", "/tmp/mail.md"]
+
+    def test_glow_viewer_explicit(self):
+        cmd = build_full_viewer_cmd(
+            "/tmp/mail.md", "/usr/bin/glow", "dracula",
+            mdcat_path="/usr/bin/mdcat", viewer="glow",
+        )
+        assert cmd[0] == "/usr/bin/glow"
+        assert "-p" in cmd  # pager 유지
+
+    def test_mdcat_viewer_no_pager_local_only(self):
+        """mdcat 선택 시 pager 미사용 + --local-only 로 이미지 인라인 렌더."""
+        cmd = build_full_viewer_cmd(
+            "/tmp/mail.md", "/usr/bin/glow", "dark",
+            mdcat_path="/usr/bin/mdcat", viewer="mdcat",
+        )
+        assert cmd == ["/usr/bin/mdcat", "--local-only", "/tmp/mail.md"]
+        assert "-p" not in cmd   # pager 붙이면 less 경유 → 이미지 깨짐
+        assert "glow" not in " ".join(cmd)
+
+    def test_mdcat_missing_falls_back_to_glow(self):
+        """viewer='mdcat' 이어도 mdcat_path=None 이면 glow 로 폴백."""
+        cmd = build_full_viewer_cmd(
+            "/tmp/mail.md", "/usr/bin/glow", "dark",
+            mdcat_path=None, viewer="mdcat",
+        )
+        assert cmd[0] == "/usr/bin/glow"
+        assert cmd[-1] == "/tmp/mail.md"
+
+    def test_path_with_spaces_preserved_verbatim(self):
+        """argv 리스트이므로 쉘 인용 불필요 — 공백 경로 그대로 전달."""
+        cmd = build_full_viewer_cmd(
+            "/tmp/my mail.md", "/usr/bin/glow", "dark",
+        )
+        assert cmd[-1] == "/tmp/my mail.md"
 
 
 # ---------------------------------------------------------------------------

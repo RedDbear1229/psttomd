@@ -236,17 +236,16 @@ class TestResolveGlowStyle:
     def test_explicit_path_returned_as_is(self):
         assert resolve_glow_style("/some/theme.json") == "/some/theme.json"
 
-    def test_empty_returns_dark(self):
-        """빈 문자열이면 항상 'dark' 를 반환한다."""
-        assert resolve_glow_style("") == "dark"
+    def test_empty_prefers_bundled_mocha(self):
+        """빈 문자열이면 번들된 mocha-glow.json 절대 경로를 반환한다."""
+        result = resolve_glow_style("")
+        assert result.endswith("mocha-glow.json")
+        assert Path(result).is_file()
 
-    def test_empty_falls_back_to_dark_when_no_file(self, tmp_path):
+    def test_empty_falls_back_to_dark_when_no_file(self, monkeypatch):
         """bundled 파일이 없으면 'dark' 를 반환한다."""
-        import mailview as mv
-        orig_file = mv.Path(__file__).parent.parent / "scripts" / "lib" / "mocha-glow.json"
-        with patch.object(mv.Path, "exists", lambda self: False):
-            result = resolve_glow_style("")
-        assert result == "dark"
+        monkeypatch.setattr(Path, "is_file", lambda self: False)
+        assert resolve_glow_style("") == "dark"
 
 
 class TestVisualHelpers:

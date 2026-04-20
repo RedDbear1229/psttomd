@@ -389,12 +389,13 @@ def resolve_glow_style(cfg_style: str) -> str:
 
     우선순위:
       1. config 에 값이 있으면 그대로 사용 (내장 테마명 또는 절대 경로)
-      2. 기본값 'dark'
+      2. 번들된 scripts/lib/mocha-glow.json (Catppuccin Mocha) — 시인성 강화 기본값
+      3. 'dark' (번들 테마 파일이 없는 비정상 설치 환경 폴백)
 
     커스텀 테마 사용 예 (config.toml):
       glow_style = "dracula"
       glow_style = "/home/user/.config/glow/catppuccin-mocha.json"
-      glow_style = "/path/to/psttomd/scripts/lib/mocha-glow.json"
+      glow_style = "dark"          # 번들 테마를 끄고 glow 기본 모노톤 사용
 
     Args:
         cfg_style: config.toml 의 mailview.glow_style 값 (빈 문자열 가능).
@@ -402,7 +403,12 @@ def resolve_glow_style(cfg_style: str) -> str:
     Returns:
         glow -s 에 전달할 테마명 또는 파일 경로 문자열.
     """
-    return cfg_style if cfg_style else "dark"
+    if cfg_style:
+        return cfg_style
+    bundled = Path(__file__).resolve().parent / "lib" / "mocha-glow.json"
+    if bundled.is_file():
+        return str(bundled)
+    return "dark"
 
 
 def build_fzf_preview_cmd(

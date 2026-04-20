@@ -3,6 +3,15 @@
 #
 # Linux/WSL:  cp config.example.toml ~/.pst2md/config.toml
 # Windows:    copy config.example.toml %USERPROFILE%\.pst2md\config.toml
+#
+# 에디터 대신 CLI 로 관리할 수도 있습니다:
+#   pst2md-config show                         # 현재 설정 확인
+#   pst2md-config set archive.root ~/mail      # 임의 키 직접 설정
+#   pst2md-config get llm.model                # 단일 키 조회
+#   pst2md-config unset mailview.glow_style    # 기본값 복원
+#   pst2md-config path                         # 설정 파일 경로
+#   pst2md-config edit                         # $EDITOR 로 열기
+# 전체 키 목록은 docs/guide.md §7.9 참조.
 
 # ── 아카이브 루트 디렉터리 ──────────────────────────────────────────────────
 [archive]
@@ -96,8 +105,8 @@ auto_index = true
 #   macOS:      brew install mdcat
 #   Windows:    winget install mdcat  또는  cargo install mdcat
 #
-# Termux 는 sixel/kitty 프로토콜을 지원하지 않아 mdcat 이용 시에도 이미지는
-# 보이지 않습니다 — 기본 glow 유지가 권장됩니다.
+# 지원 터미널이 아니면 mdcat 사용 시에도 이미지가 보이지 않으니 기본값 "glow" 를
+# 유지하고, 필요할 때만 "mdcat" 으로 전환하는 것을 권장합니다.
 preview_viewer = "glow"
 
 # ── mailenrich LLM 설정 ───────────────────────────────────────────────────

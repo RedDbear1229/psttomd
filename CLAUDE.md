@@ -209,30 +209,6 @@ uv run mypy scripts/
 uv run pytest tests/ -v
 ```
 
-### pip (Android/Termux — uv 미지원 환경)
-
-uv 는 `aarch64-linux-android` 를 지원하지 않습니다. Termux 에서는 pip 를 직접 사용합니다:
-
-```bash
-# 의존성 설치
-pip install click tomli tqdm html2text beautifulsoup4 \
-    python-slugify chardet python-dateutil mail-parser
-
-# pypff 는 소스 빌드 필요 (ld 심링크 사전 준비)
-ln -sf $(which lld) $(dirname $(which lld))/ld
-pip install libpff-python
-
-# 패키지 editable 설치 (CLI 커맨드를 PATH 에 등록)
-pip install -e .
-
-# mailenrich (LLM enrichment) 사용 시
-pip install httpx
-# 또는: pip install -e '.[mailenrich]'
-
-# 이후 python scripts/... 없이 바로 실행 가능
-pst2md --pst tests/data/test.pst --dry-run
-```
-
 ---
 
 ## 자주 쓰는 커맨드
@@ -255,11 +231,22 @@ pst2md --pst tests/data/test.pst --out ~/mail-archive --no-index
 pst2md --pst /path/to/archive.pst --save-out
 
 # 설정 확인 / 변경 (모든 설정은 ~/.pst2md/config.toml 에 통합 — 분산 없음)
-pst2md-config show
-pst2md-config set-output ~/mail-archive
-pst2md-config set glow                # fzf preview 기본 뷰어
-pst2md-config set mdcat               # Kitty/WezTerm/sixel 터미널에서 이미지 인라인
+pst2md-config show                    # 전체 출력 (민감값 마스킹)
+pst2md-config show llm                # 섹션만
+pst2md-config get archive.root        # 단일 키 (스크립트용)
+pst2md-config set archive.root ~/mail-archive          # 범용 set
+pst2md-config set pst_backend pypff
+pst2md-config set mailview.auto_index false
+pst2md-config set mailview.preview_viewer mdcat        # glow ↔ mdcat
+pst2md-config set llm.provider ollama
+pst2md-config set llm.concurrency 8
+pst2md-config unset mailview.glow_style                # 기본값 복원
+pst2md-config path                    # 설정 파일 절대 경로
+pst2md-config edit                    # $EDITOR 로 열기
+pst2md-config set-output ~/mail-archive     # alias = set archive.root ...
+pst2md-config set-viewer mdcat              # alias = set mailview.preview_viewer ...
 pst2md-config init --force
+# 구형 `set glow|mdcat` 은 deprecated — set-viewer 사용 권장 (stderr 경고).
 
 # 인덱스 재구축
 build-index --archive ~/mail-archive --rebuild
@@ -277,7 +264,7 @@ mailview --doctor           # 플랫폼/locale/fzf/glow/mdcat/bat/awk 진단 출
 # fzf 내부: Esc = 쿼리+필터 초기화 (Ctrl-R 동일), ':q'+Enter = 종료 (Linux/WSL)
 # 한글 입력 문제는 docs/hangul-input.md 참고
 # 인라인 이미지 (Kitty/WezTerm/iTerm2/Windows Terminal 1.22+ sixel):
-#   pst2md-config set mdcat  — preview + Enter 전체 열람 양쪽 모두 mdcat 사용.
+#   pst2md-config set-viewer mdcat  — preview + Enter 전체 열람 양쪽 모두 mdcat 사용.
 #   Enter 렌더링은 pager 미사용(less 경유 시 그래픽 깨짐) — 터미널 스크롤로 이동.
 #   `cargo install mdcat` 또는 `brew install mdcat` 로 설치.
 

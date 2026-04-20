@@ -28,28 +28,6 @@ uv sync --extra linux   # libpff-python 포함
 export MAIL_ARCHIVE="$HOME/mail-archive"
 ```
 
-### Android / Termux (uv 미지원)
-
-uv 는 `aarch64-linux-android` 를 지원하지 않습니다.
-
-```bash
-# ncurses 충돌 해결 후 Python 설치
-pkg install -y ncurses=6.5.20240831-3
-pkg install -y python fzf ripgrep
-
-# ld / ar 심링크 (libpff-python 소스 빌드 필요)
-ln -sf $(which lld)     $(dirname $(which lld))/ld
-ln -sf $(which llvm-ar) $(dirname $(which llvm-ar))/ar
-
-# 의존성 설치
-pip install click tomli tqdm html2text beautifulsoup4 \
-    python-slugify chardet python-dateutil mail-parser
-pip install libpff-python   # 소스 빌드 (~5분)
-
-# 실행 (python scripts/*.py 직접)
-python scripts/pst2md.py --pst tests/data/test.pst --dry-run
-```
-
 ---
 
 ## Phase 1 — PoC (첫 PST 변환)

@@ -66,9 +66,6 @@
   - `docs/runbook.md`: 모든 실행 명령 `uv run` 기준으로 업데이트
   - `.gitignore`: `uv.lock` 커밋 대상 유지 (애플리케이션 재현 가능 빌드)
 
-> **참고**: uv는 Android/Termux (aarch64-linux-android) 를 지원하지 않습니다.
-> 해당 환경에서는 `pip install` 을 직접 사용하세요. (→ [트러블슈팅](docs/guide.md#11-트러블슈팅))
-
 ---
 
 ## [0.2.0] - 2026-04-14

@@ -71,10 +71,12 @@ class TestDetectPlatform:
         plat = detect_platform()
         assert plat in ("windows", "wsl", "linux")
 
-    def test_not_windows_on_android(self):
-        # Termux/Android 는 linux 또는 wsl 이어야 한다
+    def test_linux_or_wsl_on_posix(self):
+        # POSIX 환경에서는 linux 또는 wsl 로 분류된다
+        if sys.platform == "win32":
+            return
         plat = detect_platform()
-        assert plat != "windows"
+        assert plat in ("linux", "wsl")
 
 
 # ---------------------------------------------------------------------------

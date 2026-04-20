@@ -177,9 +177,6 @@ print(init_config_file())
 "
 ```
 
-> **Android/Termux 환경**: uv는 `aarch64-linux-android`를 지원하지 않습니다.
-> `pip install` 을 직접 사용하세요 → [트러블슈팅: Android/Termux 환경](#android--termux-환경)
-
 #### PATH 설정
 
 `~/.bashrc` 또는 `~/.zshrc` 에 추가:
@@ -870,27 +867,52 @@ archive-monthly --pst <경로> [옵션]
 ### 7.9 pst2md-config — 설정 관리
 
 `~/.pst2md/config.toml` 을 명령행으로 조회·수정합니다. 에디터를
-열지 않고 아카이브 경로·백엔드·도구 경로를 빠르게 바꿀 수 있습니다.
+열지 않고도 아카이브 루트·백엔드·도구 경로·LLM 파라미터 등 20개 이상의
+설정을 빠르게 바꿀 수 있습니다.
 
 #### 기본 사용법
 
 ```bash
-# 현재 설정 출력 (archive / pst_backend / tools / mailview / win32com)
+# 현재 설정 전체 출력 (토큰 등 민감값은 마스킹)
 pst2md-config show
 
-# 출력(아카이브) 루트 경로 설정
-pst2md-config set-output ~/mail-archive
-pst2md-config set-output "C:/Users/YOU/mail-archive"   # Windows
+# 섹션만 보기
+pst2md-config show archive          # [archive] 만
+pst2md-config show llm              # [llm] 과 [llm.scope]
+pst2md-config show mailview         # [mailview]
 
-# fzf preview 뷰어 전환 (glow ↔ mdcat)
-pst2md-config set glow                 # 기본. 컬러 마크다운, 이미지는 링크
-pst2md-config set mdcat                # Kitty/WezTerm/sixel 터미널에서 이미지 인라인
+# 단일 키 조회
+pst2md-config get archive.root
+pst2md-config get llm.model
+pst2md-config get tools.fzf
 
-# 설정 파일 없을 때 기본 템플릿 생성
+# 단일 키 설정 (자동 타입 변환: bool / int / list / choice)
+pst2md-config set archive.root ~/mail-archive
+pst2md-config set pst_backend pypff
+pst2md-config set mailview.auto_index false
+pst2md-config set mailview.preview_viewer mdcat
+pst2md-config set llm.provider ollama
+pst2md-config set llm.endpoint http://localhost:11434
+pst2md-config set llm.concurrency 8
+pst2md-config set llm.scope.skip_folders '["Junk","Spam","Deleted Items"]'
+
+# 키 제거 (기본값으로 되돌리기)
+pst2md-config unset mailview.glow_style
+
+# 설정 파일 경로만 출력 (스크립트용)
+pst2md-config path
+
+# 기본 에디터($EDITOR)로 config.toml 열기
+pst2md-config edit
+
+# 편의 alias
+pst2md-config set-output ~/mail-archive          # = set archive.root ...
+pst2md-config set-viewer mdcat                   # = set mailview.preview_viewer mdcat
+pst2md-config set-viewer glow
+
+# 초기화
 pst2md-config init
-pst2md-config init --force                             # 기존 덮어쓰기
-
-# 초기화 시 옵션 지정
+pst2md-config init --force
 pst2md-config init --output ~/mail-archive --backend pypff
 ```
 
@@ -898,10 +920,40 @@ pst2md-config init --output ~/mail-archive --backend pypff
 
 | 명령 | 설명 |
 |---|---|
-| `show` | 현재 config 전체 및 실제 적용값 확인 (archive.root, pst_backend, tools.\*, mailview.\*) |
-| `set-output PATH` | `archive.root` 를 업데이트. `~` 자동 확장 |
-| `set glow\|mdcat` | `mailview.preview_viewer` 를 업데이트. mdcat 이 PATH 에 없으면 경고 |
-| `init` | `~/.pst2md/config.toml` 이 없으면 기본 템플릿 생성. `--force` 로 덮어쓰기 |
+| `show [SECTION]` | 전체 또는 지정 섹션(`archive`, `llm`, `mailview`, `tools`, `win32com` 등) 출력. 민감값은 마스킹 |
+| `get KEY` | 단일 키 값 출력 (스크립트용, 민감값은 마스킹) |
+| `set KEY VALUE` | 단일 키 설정. 타입은 자동 변환 (bool/int/list/choice). 미지 키는 근접 제안 |
+| `unset KEY` | 키 제거. 섹션에 남은 키가 없으면 섹션도 함께 제거 |
+| `path` | config 파일 절대 경로 출력 |
+| `edit` | `$EDITOR` 로 config 파일 열기 (없으면 `vi`) |
+| `set-output PATH` | `archive.root` alias. `~` 자동 확장 |
+| `set-viewer glow\|mdcat` | `mailview.preview_viewer` alias. mdcat 미설치 시 stderr 경고 |
+| `init [--force]` | `~/.pst2md/config.toml` 이 없으면 기본 템플릿 생성. `--force` 로 덮어쓰기 |
+
+> 구형 `pst2md-config set glow` / `set mdcat` 은 1 릴리즈 동안 브릿지로 동작하며
+> stderr 로 deprecation 경고를 출력합니다. 새 스크립트에서는 `set-viewer` 사용을 권장합니다.
+
+#### 설정 가능한 키 (주요)
+
+| 키 | 타입 | 기본값 | 설명 |
+|---|---|---|---|
+| `archive.root` | str | `~/mail-archive` | 출력 아카이브 루트 |
+| `archive.roots` | list | `[]` | 다중 아카이브 루트 (mailgrep 등) |
+| `pst_backend` | choice | `auto` | `auto`/`pypff`/`readpst`/`win32com` |
+| `tools.fzf`·`glow`·`bat`·`sqlite3`·`rg` | str | 자동 탐색 | 각 도구 절대 경로 |
+| `win32com.outlook_profile` | str | `""` | Outlook 프로필 이름 (Windows) |
+| `mailview.glow_style` | str | `"dark"` | glow 테마 (`dark`·`light`·`dracula` 등) |
+| `mailview.auto_index` | bool | `true` | 뷰어 실행 시 증분 인덱스 자동 갱신 |
+| `mailview.preview_viewer` | choice | `glow` | `glow` 또는 `mdcat` |
+| `llm.provider` | choice | `openai` | `openai`/`anthropic`/`ollama` |
+| `llm.endpoint`·`model` | str | 제공자별 | API 엔드포인트 / 모델 이름 |
+| `llm.token` | str (민감) | `""` | API 토큰 (env `LLM_TOKEN` 이 우선) |
+| `llm.timeout`·`max_retries`·`concurrency` | int | 60·3·4 | 요청 타임아웃 / 재시도 / 병렬도 |
+| `llm.scope.summary_max_chars`·`tag_max_count`·`related_max_count`·`skip_body_shorter_than` | int | 300·5·5·100 | 요약/태그 상한 |
+| `llm.scope.skip_folders` | list | `["Junk","Spam","Deleted Items"]` | 보강 제외 폴더 |
+
+> 전체 키 목록은 `scripts/lib/config_schema.py` 의 `KNOWN_KEYS` 가 단일 진실원입니다.
+> 미지 키를 `set` 으로 전달하면 `difflib` 기반 근접 제안을 출력합니다.
 
 #### pst2md 변환 시 함께 저장하기
 
@@ -922,8 +974,8 @@ pst2md --pst /path/to/archive2.pst
 
 | 플랫폼 | 경로 |
 |---|---|
-| Linux/WSL/Android | `~/.pst2md/config.toml` |
-| Windows           | `%USERPROFILE%\.pst2md\config.toml` |
+| Linux/WSL | `~/.pst2md/config.toml` |
+| Windows   | `%USERPROFILE%\.pst2md\config.toml` |
 
 > 코드 레벨에서는 `scripts/lib/config.py` 의 `config_file_path()` 헬퍼가 단일
 > 진실 원천이므로, 경로 변경이나 테스트 격리 시 한 곳만 수정하면 됩니다.
@@ -1439,30 +1491,6 @@ pypff 가 첨부 파일명을 `None` 으로 반환하는 경우입니다.
 v0.3.0 이상에서는 MAPI record_sets 에서 표시 이름(`PR_DISPLAY_NAME`)을 추출합니다.
 
 일반 이메일 첨부(`ATTACH_BY_VALUE`)는 `PR_ATTACH_LONG_FILENAME` 에서 파일명이 정상 추출됩니다.
-
----
-
-### Android / Termux 환경
-
-uv 는 `aarch64-linux-android` 를 지원하지 않습니다. pip를 직접 사용합니다.
-
-```bash
-# ncurses 버전 충돌 해결 후 Python 설치
-pkg install -y ncurses=6.5.20240831-3
-pkg install -y python
-
-# ld 심링크 (libpff-python 빌드에 필요)
-ln -sf $(which lld) $(dirname $(which lld))/ld
-ln -sf $(which llvm-ar) $(dirname $(which llvm-ar))/ar
-
-# 의존성 설치
-pip install click tomli tqdm html2text beautifulsoup4 \
-    python-slugify chardet python-dateutil mail-parser
-pip install libpff-python   # 소스 빌드 (5분 내외)
-
-# 실행
-python scripts/pst2md.py --pst tests/data/test.pst --dry-run
-```
 
 ---
 

@@ -22,7 +22,7 @@
 |---|---|
 | IME → 터미널 | 조합 중 문자(pre-edit string) 전송 타이밍이 터미널 입력 버퍼와 어긋남 |
 | 터미널 → fzf | 터미널이 CJK wide glyph 폭을 2 로 보고하지 않아 커서 위치 계산이 틀어짐 |
-| fzf 내부    | fzf 의 UTF-8 조합 문자 렌더링이 일부 플랫폼(Termux aarch64) 에서 빈약 |
+| fzf 내부    | fzf 의 UTF-8 조합 문자 렌더링이 일부 빌드에서 빈약 |
 
 확정하려면 각 계층을 분리 재현해야 한다. 아래 체크리스트가 우선.
 
@@ -43,35 +43,36 @@ mailview --doctor
 
 ### 2. 환경별 권장 설정
 
-**Termux (aarch64-linux-android)**
+**WSL2 / Windows Terminal**
+
+- Windows Terminal → Profile → Appearance → "Font face" 에 CJK 지원 폰트
+  (NanumGothicCoding, D2Coding, Cascadia Code 등)
+- `/etc/wsl.conf` 또는 `~/.bashrc` 에 `LANG=en_US.UTF-8` 반영
+- IME 는 Microsoft IME (한국어) 사용 시 조합 이벤트가 안정적
 
 ```bash
-pkg install noto-cjk                         # CJK 폰트
-echo "export LANG=en_US.UTF-8" >> ~/.bashrc
-echo "export LC_CTYPE=en_US.UTF-8" >> ~/.bashrc
-termux-reload-settings                       # 폰트 반영
+# ~/.bashrc
+export LANG=en_US.UTF-8
+export LC_CTYPE=en_US.UTF-8
 ```
 
-Gboard 입력 방식: **"한국어(두벌식)" 키보드 선택** — 기본 "한국어(천지인)" 은 조합 이벤트를
-더 자주 발생시켜 증상이 잘 보인다.
+**Windows Native (PowerShell / cmd)**
 
-**Linux native**
+- 기본 콘솔 호스트(conhost) 는 CJK 조합 렌더링이 약하다 → Windows Terminal 사용 권장
+- 시스템 "Language for non-Unicode programs" = Korean 권장
+
+**Linux native (Debian/Ubuntu)**
 
 ```bash
-sudo apt install fonts-noto-cjk             # Debian/Ubuntu
+sudo apt install fonts-noto-cjk             # CJK 폰트
 # 또는
 sudo dnf install google-noto-cjk-fonts      # Fedora
 
 export LANG=en_US.UTF-8
 ```
 
-터미널 에뮬레이터: **Alacritty, kitty, GNOME Terminal** 은 CJK wide glyph 를
-정확히 처리한다. **xterm / urxvt** 는 별도 설정 필요.
-
-**WSL2 (Windows Terminal)**
-
-- Windows Terminal settings → Profile → Appearance → "Font face" 에 CJK 지원 폰트 (NanumGothicCoding, D2Coding, Cascadia Code 등)
-- `wsl.conf` 에 `LANG=en_US.UTF-8` 반영
+터미널 에뮬레이터: **Alacritty, kitty, GNOME Terminal, WezTerm** 은 CJK wide
+glyph 를 정확히 처리한다. **xterm / urxvt** 는 별도 설정 필요.
 
 ### 3. tmux / screen 사용 시
 
@@ -99,9 +100,8 @@ mailview --folder "Inbox/계약"
 mailview "계약" --after 2023-01-01
 ```
 
-쿼리를 mailview 쉘 입력창이 아닌 **bash 프롬프트**에 입력하므로 IME 조합 문제를
-터미널이 아니라 bash readline 이 처리한다. Gboard / IBus / macOS IME 는 bash
-readline 과 궁합이 좋다.
+쿼리를 mailview 쉘 입력창이 아닌 **셸 프롬프트**에 입력하므로 IME 조합 문제를
+터미널이 아니라 readline 이 처리한다.
 
 ---
 
@@ -111,10 +111,8 @@ readline 과 궁합이 좋다.
 
 ```bash
 mailview --doctor > doctor.log
-env | grep -E 'LANG|LC_|TERM|TERMUX' >> doctor.log
-# Termux
-getprop ro.build.version.release 2>/dev/null >> doctor.log
-# 입력 재현 영상 (선택) — termux-record 또는 asciinema
+env | grep -E 'LANG|LC_|TERM' >> doctor.log
+# 입력 재현 영상 (선택) — asciinema rec hangul.cast
 ```
 
 향후 원인이 확정되면 개선 plan 을 별건으로 수립한다.

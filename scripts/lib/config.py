@@ -397,28 +397,62 @@ def llm_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
 # TOML 편집 헬퍼
 # ---------------------------------------------------------------------------
 
-def _toml_key_line(key: str, value: str) -> str:
-    """TOML key = "value" 줄을 생성한다. 역슬래시를 슬래시로 정규화한다."""
-    return f'{key} = "{str(value).replace(chr(92), "/")}"'
+def _toml_key_line(key: str, value: Any) -> str:
+    """TOML ``key = <literal>`` 줄을 생성한다.
+
+    str 값은 역슬래시를 슬래시로 정규화하고 큰따옴표로 감싼다.
+    bool / int / list 는 TOML 리터럴로 직렬화한다.
+    """
+    if isinstance(value, bool):
+        literal = "true" if value else "false"
+    elif isinstance(value, int):
+        literal = str(value)
+    elif isinstance(value, list):
+        inner = ", ".join(f'"{str(v)}"' for v in value)
+        literal = f"[{inner}]"
+    else:
+        literal = f'"{str(value).replace(chr(92), "/")}"'
+    return f"{key} = {literal}"
 
 
 def _replace_in_section(text: str, section: str, key: str, new_line: str) -> tuple[str, bool]:
     """TOML 텍스트의 특정 섹션 내 key 줄을 교체한다.
 
+    문자열 / 숫자 / 불리언 / 리스트 값 모두 지원한다. 값은 줄바꿈 전까지를 대체한다.
+
     Args:
         text:     TOML 파일 전체 내용.
-        section:  섹션 이름 (예: "llm").
+        section:  섹션 이름 (예: "llm" 또는 "llm.scope").
         key:      교체할 키 이름.
-        new_line: 새 key = "value" 줄.
+        new_line: 새 ``key = <literal>`` 줄.
 
     Returns:
         (updated_text, replaced) — replaced 가 False 이면 key 줄이 없었음.
     """
     pattern = re.compile(
-        r"(\[" + re.escape(section) + r"\].*?)(\b" + re.escape(key) + r'\s*=\s*"[^"]*")',
+        r"(\[" + re.escape(section) + r"\][^\[]*?)(\b" + re.escape(key) + r"\s*=[^\n]*)",
         re.DOTALL,
     )
     updated, count = pattern.subn(lambda m: m.group(1) + new_line, text, count=1)
+    return updated, count > 0
+
+
+def _remove_in_section(text: str, section: str, key: str) -> tuple[str, bool]:
+    """TOML 텍스트의 특정 섹션 내 key 줄을 제거한다.
+
+    Returns:
+        (updated_text, removed) — removed 가 False 이면 key 가 섹션에 없었음.
+    """
+    pattern = re.compile(
+        r"(\[" + re.escape(section) + r"\][^\[]*?)\n?[ \t]*\b"
+        + re.escape(key) + r"\s*=[^\n]*\n?",
+        re.DOTALL,
+    )
+
+    def _sub(m: re.Match[str]) -> str:
+        return m.group(1).rstrip() + "\n"
+
+    updated, count = pattern.subn(_sub, text, count=1)
     return updated, count > 0
 
 
@@ -441,16 +475,16 @@ def save_llm_setting(key: str, value: str) -> Path:
     return save_setting("llm", key, value)
 
 
-def save_setting(section: str, key: str, value: str) -> Path:
+def save_setting(section: str, key: str, value: Any) -> Path:
     """config.toml 의 임의 섹션 단일 키를 업데이트한다.
 
     파일이 없으면 먼저 생성한다. 섹션이 없으면 파일 끝에 추가한다.
-    기존 주석은 보존하며, 해당 key = "..." 줄만 교체/추가한다.
+    기존 주석은 보존하며, 해당 key 줄만 교체/추가한다.
 
     Args:
-        section: TOML 섹션 이름 (예: "mailview", "llm", "archive").
+        section: TOML 섹션 이름 (예: "mailview", "llm", "llm.scope").
         key:     변경할 키 이름.
-        value:   새 값 (문자열).
+        value:   새 값 (str / int / bool / list).
 
     Returns:
         업데이트된 config.toml 경로.
@@ -473,7 +507,34 @@ def save_setting(section: str, key: str, value: str) -> Path:
             insertion = m.group(1).rstrip() + f"\n{new_line}\n"
             updated = updated[: m.start()] + insertion + updated[m.end():]
         else:
-            updated = original.rstrip() + f"\n\n[{section}]\n{new_line}\n"
+            updated = updated.rstrip() + f"\n\n[{section}]\n{new_line}\n"
+
+    # 섹션 경계를 빈 줄로 구분 — 이전 단계의 `.rstrip()` 이 원본 공백을
+    # 지웠을 수 있으므로 일괄 정규화한다.
+    updated = re.sub(r"([^\n])\n\[", r"\1\n\n[", updated)
 
     config_file.write_text(updated, encoding="utf-8")
     return config_file
+
+
+def unset_setting(section: str, key: str) -> tuple[Path, bool]:
+    """config.toml 의 특정 섹션에서 key 줄을 제거한다.
+
+    파일이 없거나 해당 줄이 없으면 변경 없이 반환한다.
+
+    Args:
+        section: TOML 섹션 이름.
+        key:     제거할 키 이름.
+
+    Returns:
+        (config.toml 경로, 실제 제거 여부).
+    """
+    config_file = config_file_path()
+    if not config_file.exists():
+        return config_file, False
+
+    original = config_file.read_text(encoding="utf-8")
+    updated, removed = _remove_in_section(original, section, key)
+    if removed:
+        config_file.write_text(updated, encoding="utf-8")
+    return config_file, removed

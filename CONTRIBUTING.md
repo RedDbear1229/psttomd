@@ -4,9 +4,6 @@
 
 의존성 관리는 **[uv](https://docs.astral.sh/uv)** 를 사용합니다.
 
-> **Android/Termux 참고**: uv 는 `aarch64-linux-android` 를 지원하지 않습니다.
-> 해당 환경에서는 아래 [pip 대체 설치](#pip-대체-설치-androidtermux) 섹션을 참고하세요.
-
 ### uv 설치
 
 ```bash
@@ -38,25 +35,6 @@ uv sync --group dev --extra win32
 
 `uv sync` 는 `pyproject.toml` 을 읽어 `.venv/` 를 자동 생성합니다.
 별도로 `python -m venv` 를 실행하거나 pip 를 쓸 필요가 없습니다.
-
-### pip 대체 설치 (Android/Termux)
-
-```bash
-# ncurses 충돌 해결 후 Python 설치
-pkg install -y ncurses=6.5.20240831-3
-pkg install -y python
-
-# ld / ar 심링크 (libpff-python 소스 빌드 필요)
-ln -sf $(which lld)     $(dirname $(which lld))/ld
-ln -sf $(which llvm-ar) $(dirname $(which llvm-ar))/ar
-
-pip install click tomli tqdm html2text beautifulsoup4 \
-    python-slugify chardet python-dateutil mail-parser pyyaml pytest
-pip install libpff-python
-
-# 테스트 실행
-python -m pytest tests/ -v
-```
 
 ### 명령 실행
 

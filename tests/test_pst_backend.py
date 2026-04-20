@@ -2,7 +2,7 @@
 tests/test_pst_backend.py — PypffBackend 스모크 테스트
 
 tests/data/test.pst (java-libpst 공개 샘플) 을 열어 메시지 반복 동작을 검증한다.
-pypff 미설치 환경(예: Windows Native, 일부 Termux)에서는 skip.
+pypff 미설치 환경(예: Windows Native)에서는 skip.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ pytestmark = pytest.mark.skipif(
 
 class TestGetBackend:
     def test_auto_picks_pypff_on_linux(self) -> None:
-        """linux/wsl/termux 환경에서 auto 는 PypffBackend 를 반환한다."""
+        """linux/wsl 환경에서 auto 는 PypffBackend 를 반환한다."""
         backend = get_backend({"pst_backend": "pypff"})
         assert isinstance(backend, PypffBackend)
 

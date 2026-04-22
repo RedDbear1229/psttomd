@@ -555,7 +555,7 @@ mailgrep "subject:견적서"
 
 ### 7.2 mailview — 인터랙티브 뷰어
 
-fzf로 메일을 선택하고 glow 또는 mdcat 으로 렌더링합니다.
+fzf로 메일을 선택하고 mdcat(기본, 이미지 인라인) 또는 glow 로 렌더링합니다.
 
 #### 기본 사용법
 
@@ -574,7 +574,7 @@ mailview "계약" --from 홍길동 --after 2024-01-01
 
 | 키 | 동작 |
 |---|---|
-| `Enter` | 선택한 메일을 렌더링 (viewer = glow 또는 mdcat — 아래 참고) |
+| `Enter` | 선택한 메일을 렌더링 (viewer = mdcat 기본, 또는 glow — 아래 참고) |
 | `Ctrl-P` | bat/less로 frontmatter 포함 원문 표시 |
 | `Ctrl-O` | `$EDITOR` (Linux) / `notepad` (Windows)로 열기 |
 | `↑↓` | 목록 이동 |
@@ -592,13 +592,15 @@ mailview "계약" --from 홍길동 --after 2024-01-01
 
 | 값 | 미리보기 | Enter 전체 열람 | 이미지 |
 |---|---|---|---|
-| `glow` (기본) | glow 파이프 | `glow -p`(pager) | 텍스트 링크만 |
-| `mdcat` | `mdcat --local --columns $FZF_PREVIEW_COLUMNS` | `mdcat --local` (pager 미사용) | 인라인 렌더 |
+| `mdcat` (기본) | `mdcat --local --columns $FZF_PREVIEW_COLUMNS` | `mdcat --local` (pager 미사용) | 인라인 렌더 |
+| `glow` | glow 파이프 | `glow -p`(pager) | 텍스트 링크만 |
 
 ```bash
-pst2md-config set glow           # 기본. 컬러 마크다운 + pager
-pst2md-config set mdcat          # 이미지 인라인 (이미지 지원 터미널 필요)
+pst2md-config set-viewer mdcat   # 기본. 이미지 인라인 (Kitty/WezTerm/iTerm2/sixel)
+pst2md-config set-viewer glow    # sixel 미지원 터미널·pager 선호 시
 ```
+
+mdcat 이 없으면 자동으로 glow 로 폴백되어 기존 환경은 깨지지 않습니다.
 
 **이미지 렌더링 조건** (mdcat):
 
@@ -944,7 +946,7 @@ pst2md-config init --output ~/mail-archive --backend pypff
 | `win32com.outlook_profile` | str | `""` | Outlook 프로필 이름 (Windows) |
 | `mailview.glow_style` | str | `"dark"` | glow 테마 (`dark`·`light`·`dracula` 등) |
 | `mailview.auto_index` | bool | `true` | 뷰어 실행 시 증분 인덱스 자동 갱신 |
-| `mailview.preview_viewer` | choice | `glow` | `glow` 또는 `mdcat` |
+| `mailview.preview_viewer` | choice | `mdcat` | `mdcat`(기본, 이미지 인라인) 또는 `glow`(sixel 미지원 터미널용) |
 | `llm.provider` | choice | `openai` | `openai`/`anthropic`/`ollama` |
 | `llm.endpoint`·`model` | str | 제공자별 | API 엔드포인트 / 모델 이름 |
 | `llm.token` | str (민감) | `""` | API 토큰 (env `LLM_TOKEN` 이 우선) |

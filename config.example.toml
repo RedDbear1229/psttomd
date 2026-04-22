@@ -45,8 +45,8 @@ pst_backend = "auto"
 # 특정 경로를 지정하려면 절대 경로를 사용하세요.
 [tools]
 fzf     = "fzf"
-glow    = "glow"
-mdcat   = "mdcat"    # 이미지 인라인 렌더 가능한 마크다운 뷰어 (opt-in, 아래 preview_viewer 참조)
+glow    = "glow"     # sixel 미지원 터미널용 폴백 뷰어
+mdcat   = "mdcat"    # 기본 마크다운 뷰어 (이미지 인라인 렌더, 아래 preview_viewer 참조)
 bat     = "bat"
 sqlite3 = "sqlite3"
 rg      = "rg"       # ripgrep (mailgrep 내부 검색에 사용)
@@ -93,21 +93,22 @@ glow_style = ""
 auto_index = true
 
 # fzf 미리보기 뷰어 선택:
-#   "glow"  — 기본. 마크다운 렌더링 + 컬러. 이미지는 텍스트 링크로만 표시.
-#   "mdcat" — Kitty/WezTerm/iTerm2 그래픽 프로토콜 또는
+#   "mdcat" — 기본. Kitty/WezTerm/iTerm2 그래픽 프로토콜 또는
 #             sixel(Windows Terminal 1.22+, xterm+sixel, mlterm) 지원 터미널에서
 #             마크다운 내 이미지를 인라인으로 렌더링. 비지원 터미널에서는
 #             자리표시자 텍스트만 보임(에러 없이 동작). 원격 fetch 는
-#             --local (-l) 로 항상 차단.
+#             --local (-l) 로 항상 차단. mdcat 미설치 시 자동으로 glow 폴백.
+#   "glow"  — 마크다운 렌더링 + 컬러. 이미지는 텍스트 링크로만 표시.
+#             sixel 미지원 터미널이거나 pager 사용을 선호할 때 사용.
 #
 # 설치:
 #   Linux/WSL:  cargo install mdcat  또는  sudo apt install mdcat(신버전 배포판)
 #   macOS:      brew install mdcat
 #   Windows:    winget install mdcat  또는  cargo install mdcat
 #
-# 지원 터미널이 아니면 mdcat 사용 시에도 이미지가 보이지 않으니 기본값 "glow" 를
-# 유지하고, 필요할 때만 "mdcat" 으로 전환하는 것을 권장합니다.
-preview_viewer = "glow"
+# 기본 mdcat 권장 — 대부분 최신 터미널에서 이미지 인라인으로 동작.
+# 구형 터미널(기본 cmd.exe, PuTTY 등)이면 "glow" 로 전환.
+preview_viewer = "mdcat"
 
 # ── mailenrich LLM 설정 ───────────────────────────────────────────────────
 [llm]

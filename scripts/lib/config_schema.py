@@ -114,9 +114,9 @@ KNOWN_KEYS: dict[str, KeySpec] = {
         description="mailview 시작 시 새 MD 파일이 있으면 인덱스를 자동 갱신.",
     ),
     "mailview.preview_viewer": _ks(
-        "mailview.preview_viewer", type="choice", default="glow",
+        "mailview.preview_viewer", type="choice", default="mdcat",
         choices=("glow", "mdcat"),
-        description="fzf preview 와 Enter 전체 열람에 사용할 뷰어.",
+        description="fzf preview 와 Enter 전체 열람에 사용할 뷰어. 기본 mdcat (Kitty/WezTerm/iTerm2/sixel 인라인 이미지). sixel 미지원 터미널이면 glow.",
     ),
     # ── llm ─────────────────────────────────────────────────────────────────
     "llm.provider": _ks(

@@ -302,13 +302,49 @@ class PypffBackend(PSTBackend):
         개별 필드 접근 시 발생할 수 있으므로 모든 필드를 독립적으로 try/except 로 감싼다.
         """
         sg = self._safe_get  # 타이핑 편의용 별칭
+        n_att, attachments = self._load_attachments(raw)
 
-        # 첨부 수: libpff descriptor node 읽기 실패가 가장 빈번하게 발생
+        # 기본 속성: pypff 가 편의 속성으로 노출하면 사용
+        sender_name_raw = str(sg(raw, "sender_name", "") or "")
+        fields = {
+            "sender_email": str(sg(raw, "sender_email_address",  "") or ""),
+            "display_to":   str(sg(raw, "display_to",            "") or ""),
+            "display_cc":   str(sg(raw, "display_cc",            "") or ""),
+            "msgid":        str(sg(raw, "message_identifier",    "") or ""),
+            "in_reply_to":  str(sg(raw, "in_reply_to_identifier", "") or ""),
+            "refs":         str(sg(raw, "references",             "") or ""),
+        }
+
+        self._fill_from_mapi(raw, fields)
+        sender_name = self._extract_sender_name(sender_name_raw, fields)
+        self._fill_from_transport_headers(raw, fields)
+
+        submit_time = sg(raw, "client_submit_time", None)
+
+        return MessageData(
+            message_identifier    = fields["msgid"],
+            subject               = str(sg(raw, "subject", "") or ""),
+            sender_name           = sender_name,
+            sender_email_address  = fields["sender_email"],
+            display_to            = fields["display_to"],
+            display_cc            = fields["display_cc"],
+            client_submit_time    = submit_time if isinstance(submit_time, datetime) else None,
+            html_body             = sg(raw, "html_body",       None),
+            plain_text_body       = sg(raw, "plain_text_body", None),
+            rtf_body              = sg(raw, "rtf_body",        None),
+            in_reply_to_identifier= fields["in_reply_to"],
+            references            = fields["refs"],
+            number_of_attachments = n_att,
+            _attachments          = attachments,
+        )
+
+    def _load_attachments(self, raw) -> tuple[int, list]:
+        """첨부 개수와 raw 객체 리스트를 로드한다 (오류 시 None slot)."""
         try:
-            n_att = int(sg(raw, "number_of_attachments", 0) or 0)
+            n_att = int(self._safe_get(raw, "number_of_attachments", 0) or 0)
         except Exception:
             n_att = 0
-            log.debug("첨부 수 읽기 실패 (손상된 노드): %r", sg(raw, "subject", ""))
+            log.debug("첨부 수 읽기 실패 (손상된 노드): %r", self._safe_get(raw, "subject", ""))
 
         attachments: list = []
         for i in range(n_att):
@@ -317,97 +353,73 @@ class PypffBackend(PSTBackend):
             except Exception as e:
                 log.debug("첨부 객체 로드 실패 [%d]: %s", i, e)
                 attachments.append(None)
+        return n_att, attachments
 
-        # client_submit_time 은 datetime 또는 None 이어야 함
-        submit_time = sg(raw, "client_submit_time", None)
+    def _fill_from_mapi(self, raw, fields: dict[str, str]) -> None:
+        """편의 속성이 비어있을 경우 MAPI record_sets 에서 in-place 로 채운다."""
+        missing: list[int] = [self._MAPI_SENDER_SMTP_ADDRESS]  # SMTP 는 있으면 우선
+        if not fields["sender_email"]: missing.append(self._MAPI_SENDER_EMAIL_ADDRESS)
+        if not fields["display_to"]:   missing.append(self._MAPI_DISPLAY_TO)
+        if not fields["display_cc"]:   missing.append(self._MAPI_DISPLAY_CC)
+        if not fields["msgid"]:        missing.append(self._MAPI_INTERNET_MESSAGE_ID)
+        if not fields["in_reply_to"]:  missing.append(self._MAPI_IN_REPLY_TO_ID)
+        if not fields["refs"]:         missing.append(self._MAPI_INTERNET_REFERENCES)
 
-        # 기본 속성: pypff 가 편의 속성으로 노출하면 사용
-        sender_name_raw    = str(sg(raw, "sender_name",           "") or "")
-        sender_email       = str(sg(raw, "sender_email_address",  "") or "")
-        display_to         = str(sg(raw, "display_to",            "") or "")
-        display_cc         = str(sg(raw, "display_cc",            "") or "")
-        msgid              = str(sg(raw, "message_identifier",    "") or "")
-        in_reply_to        = str(sg(raw, "in_reply_to_identifier", "") or "")
-        refs               = str(sg(raw, "references",             "") or "")
-
-        # pypff 일부 버전은 위 편의 속성을 노출하지 않음 → MAPI record_sets 로 보강
-        missing_props = []
-        if not sender_email: missing_props.append(self._MAPI_SENDER_EMAIL_ADDRESS)
-        missing_props.append(self._MAPI_SENDER_SMTP_ADDRESS)  # 있으면 우선
-        if not display_to:   missing_props.append(self._MAPI_DISPLAY_TO)
-        if not display_cc:   missing_props.append(self._MAPI_DISPLAY_CC)
-        if not msgid:        missing_props.append(self._MAPI_INTERNET_MESSAGE_ID)
-        if not in_reply_to:  missing_props.append(self._MAPI_IN_REPLY_TO_ID)
-        if not refs:         missing_props.append(self._MAPI_INTERNET_REFERENCES)
-
-        mapi = self._read_mapi_strings(raw, missing_props)
+        mapi = self._read_mapi_strings(raw, missing)
 
         # SMTP 주소가 있으면 우선 (exchange legacy DN 보다 신뢰성 높음)
         smtp = mapi.get(self._MAPI_SENDER_SMTP_ADDRESS, "")
         if smtp and "@" in smtp:
-            sender_email = smtp
-        elif not sender_email:
-            sender_email = mapi.get(self._MAPI_SENDER_EMAIL_ADDRESS, "")
-        if not display_to:  display_to  = mapi.get(self._MAPI_DISPLAY_TO, "")
-        if not display_cc:  display_cc  = mapi.get(self._MAPI_DISPLAY_CC, "")
-        if not msgid:       msgid       = mapi.get(self._MAPI_INTERNET_MESSAGE_ID, "")
-        if not in_reply_to: in_reply_to = mapi.get(self._MAPI_IN_REPLY_TO_ID, "")
-        if not refs:        refs        = mapi.get(self._MAPI_INTERNET_REFERENCES, "")
+            fields["sender_email"] = smtp
+        elif not fields["sender_email"]:
+            fields["sender_email"] = mapi.get(self._MAPI_SENDER_EMAIL_ADDRESS, "")
+        if not fields["display_to"]:  fields["display_to"]  = mapi.get(self._MAPI_DISPLAY_TO, "")
+        if not fields["display_cc"]:  fields["display_cc"]  = mapi.get(self._MAPI_DISPLAY_CC, "")
+        if not fields["msgid"]:       fields["msgid"]       = mapi.get(self._MAPI_INTERNET_MESSAGE_ID, "")
+        if not fields["in_reply_to"]: fields["in_reply_to"] = mapi.get(self._MAPI_IN_REPLY_TO_ID, "")
+        if not fields["refs"]:        fields["refs"]        = mapi.get(self._MAPI_INTERNET_REFERENCES, "")
 
-        # sender_name 안에 이메일이 섞여있으면 분리
-        if sender_name_raw:
-            clean_name, embedded_email = self._clean_sender_name(sender_name_raw)
-            if embedded_email and "@" in embedded_email and not sender_email.strip("@"):
-                sender_email = embedded_email
-            # @ENRON 등 접미사만 제거
-            sender_name = clean_name if clean_name else sender_name_raw
-        else:
-            sender_name = ""
+    def _extract_sender_name(self, sender_name_raw: str, fields: dict[str, str]) -> str:
+        """sender_name 원문에서 이름을 추출하고, 섞여있던 이메일은 fields 에 반영한다."""
+        if not sender_name_raw:
+            return ""
+        clean_name, embedded_email = self._clean_sender_name(sender_name_raw)
+        if embedded_email and "@" in embedded_email and not fields["sender_email"].strip("@"):
+            fields["sender_email"] = embedded_email
+        return clean_name if clean_name else sender_name_raw
 
-        # transport_headers fallback: 위 방법으로도 누락된 필드를 RFC 2822 헤더에서 채움
-        if not (display_to and display_cc and sender_email and msgid and in_reply_to):
-            th = sg(raw, "transport_headers", "")
-            if isinstance(th, bytes):
-                try: th = th.decode("utf-8", errors="replace")
-                except Exception: th = ""
-            th = str(th or "")
-            if th:
-                if not display_to:   display_to   = self._parse_header_field(th, "To")
-                if not display_cc:   display_cc   = self._parse_header_field(th, "Cc")
-                if not sender_email:
-                    frm = self._parse_header_field(th, "From")
-                    # "Name <email@x>" → email@x
-                    mfrm = re.search(r"<([^>]+@[^>]+)>", frm)
-                    if mfrm:
-                        sender_email = mfrm.group(1)
-                    elif "@" in frm:
-                        sender_email = frm.strip()
-                if not msgid:
-                    mid = self._parse_header_field(th, "Message-ID") or self._parse_header_field(th, "Message-Id")
-                    if mid: msgid = mid.strip()
-                if not in_reply_to:
-                    irt = self._parse_header_field(th, "In-Reply-To")
-                    if irt: in_reply_to = irt.strip()
-                if not refs:
-                    rf = self._parse_header_field(th, "References")
-                    if rf: refs = rf.strip()
+    def _fill_from_transport_headers(self, raw, fields: dict[str, str]) -> None:
+        """RFC 2822 transport_headers 에서 누락된 필드를 in-place 로 채운다."""
+        if fields["display_to"] and fields["display_cc"] and fields["sender_email"] \
+                and fields["msgid"] and fields["in_reply_to"]:
+            return
 
-        return MessageData(
-            message_identifier    = msgid,
-            subject               = str(sg(raw, "subject", "") or ""),
-            sender_name           = sender_name,
-            sender_email_address  = sender_email,
-            display_to            = display_to,
-            display_cc            = display_cc,
-            client_submit_time    = submit_time if isinstance(submit_time, datetime) else None,
-            html_body             = sg(raw, "html_body",       None),
-            plain_text_body       = sg(raw, "plain_text_body", None),
-            rtf_body              = sg(raw, "rtf_body",        None),
-            in_reply_to_identifier= in_reply_to,
-            references            = refs,
-            number_of_attachments = n_att,
-            _attachments          = attachments,
-        )
+        th = self._safe_get(raw, "transport_headers", "")
+        if isinstance(th, bytes):
+            try: th = th.decode("utf-8", errors="replace")
+            except Exception: th = ""
+        th = str(th or "")
+        if not th:
+            return
+
+        if not fields["display_to"]: fields["display_to"] = self._parse_header_field(th, "To")
+        if not fields["display_cc"]: fields["display_cc"] = self._parse_header_field(th, "Cc")
+        if not fields["sender_email"]:
+            frm = self._parse_header_field(th, "From")
+            mfrm = re.search(r"<([^>]+@[^>]+)>", frm)
+            if mfrm:
+                fields["sender_email"] = mfrm.group(1)
+            elif "@" in frm:
+                fields["sender_email"] = frm.strip()
+        if not fields["msgid"]:
+            mid = self._parse_header_field(th, "Message-ID") or self._parse_header_field(th, "Message-Id")
+            if mid: fields["msgid"] = mid.strip()
+        if not fields["in_reply_to"]:
+            irt = self._parse_header_field(th, "In-Reply-To")
+            if irt: fields["in_reply_to"] = irt.strip()
+        if not fields["refs"]:
+            rf = self._parse_header_field(th, "References")
+            if rf: fields["refs"] = rf.strip()
 
     # MAPI 첨부 파일명 관련 프로퍼티 ID (MS-PST / MS-OXCMSG 명세)
     _MAPI_ATTACH_LONG_FILENAME = 0x3707  # PR_ATTACH_LONG_FILENAME  (우선순위 1)

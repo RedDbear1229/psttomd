@@ -92,6 +92,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "outlook_profile": "",
     },
     "mailview": {
+        # 미리보기·Enter 열람 뷰어: mdcat(기본, 이미지 인라인) | glow
+        # mdcat 이 없으면 자동으로 glow 로 폴백한다.
+        "preview_viewer": "mdcat",
         # fzf 미리보기에서 glow 가 사용할 스타일.
         # 기본 dark. 변경 시: dark | light | dracula | tokyo-night | notty
         # 또는 커스텀 JSON 절대 경로: "/절대/경로/my-theme.json"
@@ -360,7 +363,10 @@ def init_config_file(
         f'rg      = "rg"\n'
         f"\n"
         f"[mailview]\n"
-        f"# fzf 미리보기 glow 테마: dark | light | dracula | tokyo-night | notty\n"
+        f"# 미리보기·Enter 열람 뷰어: mdcat(기본, Kitty/WezTerm/iTerm2/sixel 인라인 이미지) | glow\n"
+        f"# sixel 미지원 터미널이면 glow 로 전환. mdcat 미설치 시 자동 glow 폴백.\n"
+        f'preview_viewer = "mdcat"\n'
+        f"# fzf 미리보기에서 glow 가 쓸 테마: dark | light | dracula | tokyo-night | notty\n"
         f"# 또는 커스텀 JSON 절대 경로. 비워두면 mocha-glow.json 자동 사용.\n"
         f'glow_style = ""\n'
         f"# mailview 시작 시 새 MD 파일이 있으면 인덱스를 자동 갱신한다.\n"

@@ -511,6 +511,84 @@ def extract_body(
 # 메시지 → Markdown 파일
 # ---------------------------------------------------------------------------
 
+def _build_frontmatter(
+    msgid: str, dt: Optional[datetime], from_fm: str,
+    to_list: list[str], cc_list: list[str], subject: str,
+    folder_path: str, thread_id: str, in_reply_to: str,
+    references: list[str], attachment_metas: list[dict],
+    tags: list[str], pst_filename: str,
+) -> str:
+    """YAML frontmatter 블록(--- 포함)을 조립해 반환한다."""
+    att_yaml = "\n".join(
+        attachment_yaml_entry(m) for m in attachment_metas if "sha256" in m
+    )
+    att_fm_section = f"attachments:\n{att_yaml}" if att_yaml else "attachments: []"
+
+    to_yaml   = json.dumps(to_list,    ensure_ascii=False)
+    cc_yaml   = json.dumps(cc_list,    ensure_ascii=False)
+    tags_yaml = json.dumps(tags,       ensure_ascii=False)
+    refs_yaml = json.dumps(references, ensure_ascii=False)
+
+    return (
+        f'---\n'
+        f'msgid: "{_yaml_str(msgid)}"\n'
+        f'date: {date_to_iso(dt) or "null"}\n'
+        f'from: "{_yaml_str(from_fm)}"\n'
+        f'to: {to_yaml}\n'
+        f'cc: {cc_yaml}\n'
+        f'subject: "{_yaml_str(subject)}"\n'
+        f'folder: "{_yaml_str(folder_path)}"\n'
+        f'thread: "{_yaml_str(thread_id)}"\n'
+        f'in_reply_to: "{_yaml_str(in_reply_to)}"\n'
+        f'references: {refs_yaml}\n'
+        f'{att_fm_section}\n'
+        f'tags: {tags_yaml}\n'
+        f'source_pst: "{_yaml_str(pst_filename)}"\n'
+        f'---'
+    )
+
+
+def _build_header_block(
+    from_addr: str, from_raw: str,
+    to_list: list[str], cc_list: list[str], dt: Optional[datetime],
+) -> str:
+    """메일 헤더 블록(본문 상단)을 조립해 반환한다."""
+    if from_addr and from_addr != from_raw:
+        from_display = f"{from_raw} <{from_addr}>"
+    else:
+        from_display = from_raw or from_addr or "(발신자 없음)"
+
+    to_display = ", ".join(to_list) if to_list else "(수신자 없음)"
+
+    block = (
+        f"**보낸사람:** {from_display}  \n"
+        f"**받는사람:** {to_display}  \n"
+    )
+    if cc_list:
+        block += f"**참조:** {', '.join(cc_list)}  \n"
+    block += f"**날짜:** {date_to_iso(dt) or '(날짜 없음)'}"
+    return block
+
+
+def _build_related_line(
+    from_addr: str, from_raw: str,
+    to_list: list[str], thread_id: str, tags: list[str],
+) -> str:
+    """본문 끝에 붙는 wikilink 관련 문서 라인을 조립한다."""
+    people_links: list[str] = []
+    if from_addr:
+        people_links.append(f"[[{from_addr}|{from_raw}]]")
+    for addr in to_list[:5]:
+        people_links.append(f"[[{addr}]]")
+
+    parts = [f"[[{thread_id}]]"]
+    if people_links:
+        parts.extend(people_links[:3])
+    for tag in tags[:3]:
+        parts.append(f"[[{tag}]]")
+    return " · ".join(parts)
+
+
 def message_to_md(
     msg: MessageData,
     folder_path: str,
@@ -642,65 +720,13 @@ def message_to_md(
             if slug and slug not in ("root", "no-subject"):
                 tags.append(slug)
 
-        # ── Wikilink 섹션 ──────────────────────────────────────────────────
-        people_links = []
-        if from_addr:
-            people_links.append(f"[[{from_addr}|{from_raw}]]")
-        for addr in to_list[:5]:
-            people_links.append(f"[[{addr}]]")
-
-        related_parts = [f"[[{thread_id}]]"]
-        if people_links:
-            related_parts.extend(people_links[:3])
-        for tag in tags[:3]:
-            related_parts.append(f"[[{tag}]]")
-        related_line = " · ".join(related_parts)
-
-        # ── YAML frontmatter 조립 ──────────────────────────────────────────
-        att_yaml = "\n".join(
-            attachment_yaml_entry(m) for m in attachment_metas if "sha256" in m
+        frontmatter  = _build_frontmatter(
+            msgid, dt, from_fm, to_list, cc_list, subject,
+            folder_path, thread_id, in_reply_to, references,
+            attachment_metas, tags, pst_filename,
         )
-        att_fm_section = f"attachments:\n{att_yaml}" if att_yaml else "attachments: []"
-
-        to_yaml   = json.dumps(to_list, ensure_ascii=False)
-        cc_yaml   = json.dumps(cc_list, ensure_ascii=False)
-        tags_yaml = json.dumps(tags, ensure_ascii=False)
-        refs_yaml = json.dumps(references, ensure_ascii=False)
-
-        frontmatter = (
-            f'---\n'
-            f'msgid: "{_yaml_str(msgid)}"\n'
-            f'date: {date_to_iso(dt) or "null"}\n'
-            f'from: "{_yaml_str(from_fm)}"\n'
-            f'to: {to_yaml}\n'
-            f'cc: {cc_yaml}\n'
-            f'subject: "{_yaml_str(subject)}"\n'
-            f'folder: "{_yaml_str(folder_path)}"\n'
-            f'thread: "{_yaml_str(thread_id)}"\n'
-            f'in_reply_to: "{_yaml_str(in_reply_to)}"\n'
-            f'references: {refs_yaml}\n'
-            f'{att_fm_section}\n'
-            f'tags: {tags_yaml}\n'
-            f'source_pst: "{_yaml_str(pst_filename)}"\n'
-            f'---'
-        )
-
-        # ── 메일 헤더 블록 (본문 상단에 표시) ────────────────────────────
-        if from_addr and from_addr != from_raw:
-            from_display = f"{from_raw} <{from_addr}>"
-        else:
-            from_display = from_raw or from_addr or "(발신자 없음)"
-
-        to_display = ", ".join(to_list) if to_list else "(수신자 없음)"
-        date_display = date_to_iso(dt) or "(날짜 없음)"
-
-        header_block = (
-            f"**보낸사람:** {from_display}  \n"
-            f"**받는사람:** {to_display}  \n"
-        )
-        if cc_list:
-            header_block += f"**참조:** {', '.join(cc_list)}  \n"
-        header_block += f"**날짜:** {date_display}"
+        header_block = _build_header_block(from_addr, from_raw, to_list, cc_list, dt)
+        related_line = _build_related_line(from_addr, from_raw, to_list, thread_id, tags)
 
         content = (
             f"{frontmatter}\n\n"

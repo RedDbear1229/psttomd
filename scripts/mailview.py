@@ -8,23 +8,25 @@ mailview — fzf + glow/mdcat 인터랙티브 메일 뷰어 (크로스플랫폼)
   mailview --thread t_abc123
 
 키 바인딩 (fzf):
-  Enter   → mailview.preview_viewer 설정에 따라 glow(기본) 또는 mdcat 으로 전체 열람
+  Enter   → mailview.preview_viewer 설정에 따라 mdcat(기본) 또는 glow 로 전체 열람
   Ctrl-P  → bat/less 로 원문 표시
   Ctrl-O  → $EDITOR / notepad 로 열기
   Ctrl-A  → 첨부 파일 목록 표시 및 열기
   ESC     → 종료
 
 뷰어 선택 (config.toml [mailview] preview_viewer):
-  - glow  (기본) : 컬러 마크다운 + pager. 이미지는 텍스트 링크로만 표시.
-  - mdcat        : Kitty/WezTerm/iTerm2 그래픽 프로토콜 또는 sixel(Windows
+  - mdcat (기본) : Kitty/WezTerm/iTerm2 그래픽 프로토콜 또는 sixel(Windows
                    Terminal 1.22+) 지원 터미널에서 마크다운 내 이미지를 인라인 렌더.
                    pager 없이 stdout 직접 출력(less 경유 시 이미지가 깨짐).
-  `pst2md-config set glow|mdcat` 로 전환.
+                   미설치 시 자동으로 glow 로 폴백.
+  - glow         : 컬러 마크다운 + pager. 이미지는 텍스트 링크로만 표시.
+                   sixel 미지원 터미널이거나 pager 를 선호할 때 사용.
+  `pst2md-config set-viewer mdcat|glow` 로 전환.
 
 첨부 파일 열기 (Ctrl-A):
   - 첨부가 1개  : 즉시 OS 기본 앱으로 열림
   - 첨부가 여러 개 : fzf 로 선택 후 열림
-  - glow 에서는 첨부 파일명이 텍스트로만 표시되며, Ctrl-A 로 실제 파일을 열 수 있음
+  - 첨부 파일명은 텍스트로 표시되고 Ctrl-A 로 실제 파일을 열 수 있음
 
 플랫폼별 파일 열기:
   Linux   : xdg-open
@@ -136,7 +138,7 @@ _HELP_LINES: list[str] = [
     "",
     "   키 바인딩 — mailview",
     "   " + "─" * 44,
-    "   Enter      메일 열람 (glow/mdcat — config preview_viewer)",
+    "   Enter      메일 열람 (mdcat/glow — config preview_viewer)",
     "   Ctrl-P     원문 표시 (bat / less)",
     "   Ctrl-O     $EDITOR 로 열기",
     "   Ctrl-A     첨부 파일 목록 열기",
@@ -424,7 +426,7 @@ def build_full_viewer_cmd(
     glow_style: str,
     *,
     mdcat_path: Optional[str] = None,
-    viewer: str = "glow",
+    viewer: str = "mdcat",
 ) -> list[str]:
     """Enter 로 선택된 메일을 렌더링할 subprocess argv 를 반환한다.
 
@@ -460,18 +462,19 @@ def build_fzf_preview_cmd(
     glow_style: str = "",
     *,
     mdcat_path: Optional[str] = None,
-    viewer: str = "glow",
+    viewer: str = "mdcat",
 ) -> str:
     """플랫폼에 맞는 fzf --preview 명령어 문자열을 생성한다.
 
     fzf 입력 형식: "레이블\\t파일경로" — {2} 가 경로를 가리킨다.
 
     뷰어 선택:
-      - glow  (기본): 마크다운 렌더링·컬러. 이미지는 텍스트 링크로만 표시.
-      - mdcat       : Kitty/WezTerm/iTerm2/sixel(Windows Terminal 1.22+) 등
+      - mdcat (기본): Kitty/WezTerm/iTerm2/sixel(Windows Terminal 1.22+) 등
                       그래픽 지원 터미널에서 첨부/원격 이미지를 인라인 렌더.
                       비지원 터미널에서는 텍스트 자리표시자로 출력.
                       `--local` 을 강제해 원격 fetch 는 차단.
+      - glow        : 마크다운 렌더링·컬러. 이미지는 텍스트 링크로만 표시.
+                      mdcat 미설치 또는 sixel 미지원 터미널에서 사용.
 
     폴백 체인: 선택 뷰어 → bat(구문 강조) → type/cat(플레인).
 
@@ -1706,6 +1709,83 @@ def run_doctor() -> None:
 # CLI 커맨드
 # ---------------------------------------------------------------------------
 
+def _load_cfg_db(archive: str) -> tuple[dict, Path]:
+    """공통 패턴: load_config + --archive 오버라이드 + db_path 계산.
+
+    main() 의 서브커맨드 분기에서 7번 반복되던 보일러플레이트를 통합한다.
+    테스트 patch 가 작동하도록 load_config/db_path 를 모듈 레벨로 참조한다.
+    """
+    cfg = load_config()
+    if archive:
+        cfg["archive"]["root"] = archive
+    return cfg, db_path(cfg)
+
+
+def _build_fzf_exec_commands(
+    plat: str, py: str, script_path: str, archive_path: str,
+    editor: str, bat_path: Optional[str], fzf_path: str,
+    iso_dates: dict[str, str], fzf_colors: str,
+) -> dict[str, Optional[str]]:
+    """fzf --bind execute/reload 에 전달할 쉘 명령어 문자열들을 조립한다.
+
+    plat 에 따라 quote char (Linux: ', Windows: ") 과 bulk 파이프 / pager 만 다르고,
+    나머지 12 개 명령어는 동일한 템플릿을 공유한다.
+
+    Args:
+        plat:         "linux" | "wsl" | "windows".
+        py:           sys.executable.
+        script_path:  mailview.py 절대 경로.
+        archive_path: 아카이브 루트.
+        editor:       $EDITOR 또는 플랫폼 기본.
+        bat_path:     bat 경로 (없으면 None → bat_cmd=None).
+        fzf_path:     fzf 실행 파일 경로.
+        iso_dates:    {"today": "2026-01-01", "week": "...", "month": "...", "year": "..."}.
+        fzf_colors:   fzf --color 인자 값.
+
+    Returns:
+        각 바인딩 이름 → 쉘 명령어 문자열 dict. ``bat_cmd`` 는 bat_path 가 없으면 None.
+    """
+    q = '"' if plat == "windows" else "'"
+    bulk_pipe = "echo {+2} |" if plat == "windows" else "printf '%s\\n' {+2} |"
+    pager_name = "more" if plat == "windows" else "less"
+    base = f"{q}{py}{q} {q}{script_path}{q}"          # python + script 경로 (인용)
+    arc  = f"--archive {q}{archive_path}{q}"          # 공통 --archive 인자
+
+    def fzf_input(extra: str = "") -> str:
+        tail = f" {extra}" if extra else ""
+        return f"{base} --fzf-input{tail} {arc}"
+
+    def popup(inner: str, label: str) -> str:
+        """sub-fzf --disabled 팝업 (도움말 / 통계)."""
+        return (
+            f"{base} {inner} "
+            f"| {q}{fzf_path}{q} --disabled --no-info "
+            f"--border=rounded --border-label={q} {label} {q} "
+            f"--color {q}{fzf_colors}{q}"
+        )
+
+    return {
+        "open_att_cmd":     f"{base} --open-att {q}{{2}}{q}",
+        "open_url_cmd":     f"{base} --open-url {q}{{2}}{q}",
+        "delete_cmd":       f"{base} --delete-msg {q}{{2}}{q} {arc}",
+        "bulk_del_cmd":     f"{bulk_pipe} {base} --fzf-bulk-delete {arc}",
+        "editor_cmd":       f"{q}{editor}{q} {q}{{2}}{q}",
+        "bat_cmd":          f"{q}{bat_path}{q} --style=full {q}{{2}}{q}" if bat_path else None,
+        "pager_cmd":        f"{pager_name} {q}{{2}}{q}",
+        "body_reload":      fzf_input(f"--body {q}{{q}}{q}"),
+        "reset_reload":     fzf_input(),
+        "sort_from_reload": fzf_input("--sort from"),
+        "sort_subj_reload": fzf_input("--sort subject"),
+        "today_reload":     fzf_input(f"--after {q}{iso_dates['today']}{q}"),
+        "week_reload":      fzf_input(f"--after {q}{iso_dates['week']}{q}"),
+        "month_reload":     fzf_input(f"--after {q}{iso_dates['month']}{q}"),
+        "year_reload":      fzf_input(f"--after {q}{iso_dates['year']}{q}"),
+        "help_popup":       popup("--show-help", "도움말"),
+        "tag_cmd":          f"{base} --tag-msg {q}{{2}}{q} {arc}",
+        "stats_popup":      popup(f"--show-stats {arc}", "통계"),
+    }
+
+
 @click.command(
     name="mailview",
     epilog=(
@@ -1719,7 +1799,7 @@ def run_doctor() -> None:
         "  mailview --dedupe --dry-run           중복 메일 감지 (삭제 없음)\n"
         "\n"
         "fzf 내부 키:\n"
-        "  Enter  전체 열람 (glow 또는 mdcat — preview_viewer 설정)\n"
+        "  Enter  전체 열람 (mdcat 또는 glow — preview_viewer 설정)\n"
         "  Esc    쿼리 · 필터 초기화 (Ctrl-R 동일)\n"
         "  :q+Enter  종료 (Linux/WSL, vim 스타일)\n"
         "  Alt-S/F/T  발신자/폴더/태그 필터 (sub-fzf)\n"
@@ -1813,10 +1893,7 @@ def main(
 
     # ── 스레드 트리 출력 모드 (Ctrl-T 확장용) ────────────────────────────
     if _thread_tree:
-        cfg = load_config()
-        if archive:
-            cfg["archive"]["root"] = archive
-        db = db_path(cfg)
+        _cfg, db = _load_cfg_db(archive)
         conn = sqlite3.connect(str(db))
         row = conn.execute(
             "SELECT thread FROM messages WHERE path = ? LIMIT 1", (_thread_tree,)
@@ -1832,10 +1909,7 @@ def main(
 
     # ── 통계 출력 모드 (Alt-I → fzf --disabled 팝업) ────────────────────
     if _show_stats:
-        cfg = load_config()
-        if archive:
-            cfg["archive"]["root"] = archive
-        db = db_path(cfg)
+        cfg, db = _load_cfg_db(archive)
         for line in format_stats_for_display(db, archive_root(cfg)):
             click.echo(line)
         return
@@ -1853,10 +1927,7 @@ def main(
 
     # ── 폴더 목록 출력 모드 (Ctrl-F 서브 fzf 용) ────────────────────────
     if _list_folders:
-        cfg = load_config()
-        if archive:
-            cfg["archive"]["root"] = archive
-        db = db_path(cfg)
+        _cfg, db = _load_cfg_db(archive)
         for folder_name in get_folder_list(db):
             click.echo(folder_name)
         return
@@ -1868,20 +1939,14 @@ def main(
 
     # ── 태그 목록 출력 모드 (Alt-T 서브 fzf 용) ─────────────────────────
     if _list_tags:
-        cfg = load_config()
-        if archive:
-            cfg["archive"]["root"] = archive
-        db = db_path(cfg)
+        _cfg, db = _load_cfg_db(archive)
         for tag_name in get_tag_list(db):
             click.echo(tag_name)
         return
 
     # ── 스레드 ID 출력 모드 (Ctrl-T 서브 fzf 용) ────────────────────────
     if _get_thread:
-        cfg = load_config()
-        if archive:
-            cfg["archive"]["root"] = archive
-        db = db_path(cfg)
+        _cfg, db = _load_cfg_db(archive)
         conn = sqlite3.connect(str(db))
         row = conn.execute(
             "SELECT thread FROM messages WHERE path = ? LIMIT 1", (_get_thread,)
@@ -1893,10 +1958,7 @@ def main(
 
     # ── fzf reload 출력 모드 (Ctrl-B / Ctrl-F / Ctrl-T / Ctrl-R / Alt-* ) ──
     if _fzf_input:
-        cfg = load_config()
-        if archive:
-            cfg["archive"]["root"] = archive
-        db = db_path(cfg)
+        cfg, db = _load_cfg_db(archive)
         archive_arg = ["--archive", cfg["archive"]["root"]] if archive else []
         if tag_filter:
             # 태그 필터는 직접 DB 쿼리 (mailgrep 경유 불필요)
@@ -1913,11 +1975,7 @@ def main(
         return
 
     # ── 일반 뷰어 모드 ───────────────────────────────────────────────────
-    cfg = load_config()
-    if archive:
-        cfg["archive"]["root"] = archive
-
-    db = db_path(cfg)
+    cfg, db = _load_cfg_db(archive)
     if not db.exists():
         click.echo(f"오류: 인덱스 없음 → {db}", err=True)
         sys.exit(1)
@@ -1964,7 +2022,7 @@ def main(
         tmp_file.close()
 
         cfg_glow_style = cfg.get("mailview", {}).get("glow_style", "")
-        cfg_viewer     = cfg.get("mailview", {}).get("preview_viewer", "glow").lower()
+        cfg_viewer     = cfg.get("mailview", {}).get("preview_viewer", "mdcat").lower()
         mdcat_path: Optional[str] = None
         if cfg_viewer == "mdcat":
             mdcat_path = _check_tool("mdcat", cfg)
@@ -1994,145 +2052,37 @@ def main(
         # ── execute()/reload() 바인딩 경로 인용부호 ───────────────────────
         # fzf 는 execute("cmd {2}") 에서 {2} 를 그대로 치환한다.
         # 공백 포함 경로를 안전하게 전달하려면 플랫폼별 인용부호가 필요하다.
-        #
         #   Linux  (sh -c)   : 작은따옴표  '{2}'
         #   Windows (cmd /c) : 큰따옴표   "{2}"
-        #
-        # Python/스크립트 경로도 동일하게 인용부호로 감싼다.
-        # fzf 색상: dark 기본 (터미널 16색 기반)
-        # 커스텀 색상 예: config.toml 에서 직접 fzf 옵션을 확장하거나
-        # 아래 _FZF_COLORS 를 Catppuccin Mocha 등으로 교체해 사용
+        # 자세한 조립 규칙은 _build_fzf_exec_commands 참고.
         _FZF_COLORS = "dark"
-
-        if plat == "windows":
-            q = '"'
-            open_att_cmd   = f'{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}'
-            open_url_cmd   = f'{q}{py}{q} {q}{script_path}{q} --open-url {q}{{2}}{q}'
-            delete_cmd     = (
-                f'{q}{py}{q} {q}{script_path}{q} --delete-msg {q}{{2}}{q} '
-                f'--archive {q}{archive_path}{q}'
-            )
-            bulk_del_cmd   = (
-                f'echo {{+2}} | {q}{py}{q} {q}{script_path}{q} --fzf-bulk-delete '
-                f'--archive {q}{archive_path}{q}'
-            )
-            editor_cmd     = f'{q}{editor}{q} {q}{{2}}{q}'
-            bat_cmd        = f'{q}{bat_path}{q} --style=full {q}{{2}}{q}' if bat_path else None
-            pager_cmd      = f'more {q}{{2}}{q}'
-            body_reload    = (
-                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
-                f'--body {q}{{q}}{q} --archive {q}{archive_path}{q}'
-            )
-            reset_reload   = (
-                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
-                f'--archive {q}{archive_path}{q}'
-            )
-            sort_from_reload = (
-                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
-                f'--sort from --archive {q}{archive_path}{q}'
-            )
-            sort_subj_reload = (
-                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
-                f'--sort subject --archive {q}{archive_path}{q}'
-            )
-            today_reload   = (
-                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
-                f'--after {q}{_today_iso}{q} --archive {q}{archive_path}{q}'
-            )
-            week_reload    = (
-                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
-                f'--after {q}{_week_iso}{q} --archive {q}{archive_path}{q}'
-            )
-            month_reload   = (
-                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
-                f'--after {q}{_month_iso}{q} --archive {q}{archive_path}{q}'
-            )
-            year_reload    = (
-                f'{q}{py}{q} {q}{script_path}{q} --fzf-input '
-                f'--after {q}{_year_iso}{q} --archive {q}{archive_path}{q}'
-            )
-            help_popup     = (
-                f'{q}{py}{q} {q}{script_path}{q} --show-help '
-                f'| {q}{fzf_path}{q} --disabled --no-info '
-                f'--border=rounded --border-label=" 도움말 " '
-                f'--color "{_FZF_COLORS}"'
-            )
-            tag_cmd        = (
-                f'{q}{py}{q} {q}{script_path}{q} --tag-msg {q}{{2}}{q} '
-                f'--archive {q}{archive_path}{q}'
-            )
-            stats_popup    = (
-                f'{q}{py}{q} {q}{script_path}{q} --show-stats '
-                f'--archive {q}{archive_path}{q} '
-                f'| {q}{fzf_path}{q} --disabled --no-info '
-                f'--border=rounded --border-label=" 통계 " '
-                f'--color "{_FZF_COLORS}"'
-            )
-        else:
-            q = "'"
-            open_att_cmd   = f"{q}{py}{q} {q}{script_path}{q} --open-att {q}{{2}}{q}"
-            open_url_cmd   = f"{q}{py}{q} {q}{script_path}{q} --open-url {q}{{2}}{q}"
-            delete_cmd     = (
-                f"{q}{py}{q} {q}{script_path}{q} --delete-msg {q}{{2}}{q} "
-                f"--archive {q}{archive_path}{q}"
-            )
-            bulk_del_cmd   = (
-                f"printf '%s\\n' {{+2}} | "
-                f"{q}{py}{q} {q}{script_path}{q} --fzf-bulk-delete "
-                f"--archive {q}{archive_path}{q}"
-            )
-            editor_cmd     = f"{q}{editor}{q} {q}{{2}}{q}"
-            bat_cmd        = f"{q}{bat_path}{q} --style=full {q}{{2}}{q}" if bat_path else None
-            pager_cmd      = f"less {q}{{2}}{q}"
-            body_reload    = (
-                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
-                f"--body {q}{{q}}{q} --archive {q}{archive_path}{q}"
-            )
-            reset_reload   = (
-                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
-                f"--archive {q}{archive_path}{q}"
-            )
-            sort_from_reload = (
-                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
-                f"--sort from --archive {q}{archive_path}{q}"
-            )
-            sort_subj_reload = (
-                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
-                f"--sort subject --archive {q}{archive_path}{q}"
-            )
-            today_reload   = (
-                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
-                f"--after {q}{_today_iso}{q} --archive {q}{archive_path}{q}"
-            )
-            week_reload    = (
-                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
-                f"--after {q}{_week_iso}{q} --archive {q}{archive_path}{q}"
-            )
-            month_reload   = (
-                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
-                f"--after {q}{_month_iso}{q} --archive {q}{archive_path}{q}"
-            )
-            year_reload    = (
-                f"{q}{py}{q} {q}{script_path}{q} --fzf-input "
-                f"--after {q}{_year_iso}{q} --archive {q}{archive_path}{q}"
-            )
-            help_popup     = (
-                f"{q}{py}{q} {q}{script_path}{q} --show-help "
-                f"| {q}{fzf_path}{q} --disabled --no-info "
-                f"--border=rounded --border-label={q} 도움말 {q} "
-                f"--color {q}{_FZF_COLORS}{q}"
-            )
-            tag_cmd        = (
-                f"{q}{py}{q} {q}{script_path}{q} --tag-msg {q}{{2}}{q} "
-                f"--archive {q}{archive_path}{q}"
-            )
-            stats_popup    = (
-                f"{q}{py}{q} {q}{script_path}{q} --show-stats "
-                f"--archive {q}{archive_path}{q} "
-                f"| {q}{fzf_path}{q} --disabled --no-info "
-                f"--border=rounded --border-label={q} 통계 {q} "
-                f"--color {q}{_FZF_COLORS}{q}"
-            )
+        q = '"' if plat == "windows" else "'"
+        _cmds = _build_fzf_exec_commands(
+            plat, py, script_path, archive_path, editor, bat_path, fzf_path,
+            iso_dates={
+                "today": _today_iso, "week":  _week_iso,
+                "month": _month_iso, "year":  _year_iso,
+            },
+            fzf_colors=_FZF_COLORS,
+        )
+        open_att_cmd     = _cmds["open_att_cmd"]
+        open_url_cmd     = _cmds["open_url_cmd"]
+        delete_cmd       = _cmds["delete_cmd"]
+        bulk_del_cmd     = _cmds["bulk_del_cmd"]
+        editor_cmd       = _cmds["editor_cmd"]
+        bat_cmd          = _cmds["bat_cmd"]
+        pager_cmd        = _cmds["pager_cmd"]
+        body_reload      = _cmds["body_reload"]
+        reset_reload     = _cmds["reset_reload"]
+        sort_from_reload = _cmds["sort_from_reload"]
+        sort_subj_reload = _cmds["sort_subj_reload"]
+        today_reload     = _cmds["today_reload"]
+        week_reload      = _cmds["week_reload"]
+        month_reload     = _cmds["month_reload"]
+        year_reload      = _cmds["year_reload"]
+        help_popup       = _cmds["help_popup"]
+        tag_cmd          = _cmds["tag_cmd"]
+        stats_popup      = _cmds["stats_popup"]
 
         # ── 3단계: 검색 하이라이트 / 폴더 브라우저 / 스레드 뷰 ─────────────
         # Linux/WSL 전용 (transform action: fzf 0.47+ 필요)
@@ -2306,7 +2256,7 @@ def main(
             )
 
         # Enter 로 선택된 메일 렌더링 — config mailview.preview_viewer 에 따라
-        # glow(기본) 또는 mdcat(이미지 인라인)로 분기.
+        # mdcat(기본, 이미지 인라인) 또는 glow 로 분기.
         if result.returncode == 0:
             selected_line = (result.stdout or "").strip()
             if "\t" in selected_line:

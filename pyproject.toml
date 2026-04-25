@@ -28,6 +28,10 @@ win32 = [
 mailenrich = [
     "httpx>=0.27",
 ]
+# Embedding 생성 (embed 사용 시에만 필요) — httpx 만 있으면 됨
+embedding = [
+    "httpx>=0.27",
+]
 
 [project.scripts]
 # 변환/인덱스/위키화
@@ -41,6 +45,8 @@ pst2md-config        = "scripts.config_cli:main"
 mailenrich-config    = "scripts.mailenrich_config:main"
 # LLM enrichment
 mailenrich           = "scripts.mailenrich:main"
+# Embedding 생성
+embed                = "scripts.embed:main"
 # CLI 도구 (크로스플랫폼 Python 버전)
 mailgrep        = "scripts.mailgrep:main"
 mailview        = "scripts.mailview:main"

@@ -24,6 +24,7 @@
    - [pst2md-config — 설정 관리](#79-pst2md-config--설정-관리)
    - [mailenrich — LLM 요약/태그](#710-mailenrich--llm-요약태그)
    - [mailenrich-config — LLM 설정](#711-mailenrich-config--llm-설정)
+   - [embed — Embedding 생성](#712-embed--embedding-생성)
 8. [Obsidian 연동](#8-obsidian-연동)
 9. [아카이브 구조 및 Markdown 스키마](#9-아카이브-구조-및-markdown-스키마)
 10. [월간 운영 절차](#10-월간-운영-절차)
@@ -953,6 +954,12 @@ pst2md-config init --output ~/mail-archive --backend pypff
 | `llm.timeout`·`max_retries`·`concurrency` | int | 60·3·4 | 요청 타임아웃 / 재시도 / 병렬도 |
 | `llm.scope.summary_max_chars`·`tag_max_count`·`related_max_count`·`skip_body_shorter_than` | int | 300·5·5·100 | 요약/태그 상한 |
 | `llm.scope.skip_folders` | list | `["Junk","Spam","Deleted Items"]` | 보강 제외 폴더 |
+| `embedding.endpoint` | str | `https://api.openai.com/v1` | OpenAI 호환 `/v1/embeddings` 엔드포인트 |
+| `embedding.model` | str | `text-embedding-3-small` | 모델 이름 (예: `nomic-embed-text` for Ollama) |
+| `embedding.token` | str (민감) | `""` | API 토큰 (env `EMBEDDING_TOKEN` 이 우선; Ollama 는 빈 문자열) |
+| `embedding.timeout`·`max_retries`·`concurrency`·`batch_size` | int | 60·3·4·64 | 요청 타임아웃 / 재시도 / 병렬도 / 배치 크기 |
+| `embedding.skip_body_shorter_than` | int | `100` | 본문 길이가 이 값(바이트) 미만이면 skip |
+| `embedding.skip_folders` | list | `["Junk","Spam","Deleted Items"]` | embedding 제외 폴더 |
 
 > 전체 키 목록은 `scripts/lib/config_schema.py` 의 `KNOWN_KEYS` 가 단일 진실원입니다.
 > 미지 키를 `set` 으로 전달하면 `difflib` 기반 근접 제안을 출력합니다.
@@ -1140,6 +1147,84 @@ chmod 600 ~/.pst2md/config.toml
 | openai | `https://api.openai.com/v1` | `gpt-4o-mini` | ✓ |
 | anthropic | `https://api.anthropic.com` | `claude-haiku-4-5-20251001` | ✓ |
 | ollama | `http://localhost:11434` | `llama3.1:8b` · `qwen2.5:7b` | ✗ |
+
+---
+
+### 7.12 embed — Embedding 생성
+
+MD 본문을 OpenAI 호환 `/v1/embeddings` 엔드포인트로 float 벡터화해 `index.sqlite`
+의 `embeddings` 테이블에 저장한다. provider 분기 없이 **endpoint + token + model**
+만으로 OpenAI · Ollama · LM Studio 등 어떤 호환 서버에서도 동작한다.
+
+#### 중복 분석 방지
+
+`msgid` 별로 `(body_hash, model)` 쌍을 저장하므로:
+
+- 본문이 변하지 않고 모델도 같으면 → **자동 skip** (HTTP 호출 없음)
+- 본문이 바뀌면 → 자동 재생성 (body SHA-256 변화 감지)
+- 모델이 바뀌면 → 자동 재생성 (예: `text-embedding-3-small` → `-large`)
+- `--force` → 위 규칙 무시하고 강제 재실행
+
+수만 건 아카이브에서도 두 번째 실행은 사실상 SQL SELECT 한 번으로 끝난다.
+
+#### 설정
+
+```bash
+# OpenAI (유료, 가장 빠름)
+pst2md-config set embedding.endpoint https://api.openai.com/v1
+pst2md-config set embedding.model    text-embedding-3-small
+export EMBEDDING_TOKEN=sk-xxxx
+
+# Ollama (로컬 무료)
+pst2md-config set embedding.endpoint http://localhost:11434/v1
+pst2md-config set embedding.model    nomic-embed-text
+# 토큰 불필요
+
+# LM Studio
+pst2md-config set embedding.endpoint http://localhost:1234/v1
+pst2md-config set embedding.model    <load 한 모델 이름>
+```
+
+#### 실행
+
+```bash
+embed --dry-run                          # 후보 수 + 예상 토큰/비용
+embed --limit 100                        # 최대 100개 처리
+embed --since 2024-01-01                 # 날짜 필터
+embed --folder 'Inbox/계약'              # 폴더 필터 (중복 지정 가능)
+embed --force                            # body_hash 무시 강제 재실행
+embed --concurrency 8 --batch-size 128   # 병렬 + 배치 크기 조정
+```
+
+#### 저장 형식
+
+`embeddings` 테이블 (index.sqlite):
+
+| 컬럼 | 타입 | 설명 |
+|---|---|---|
+| `msgid` | TEXT PRIMARY KEY | 메시지 식별자 |
+| `body_hash` | TEXT | body SHA-256 (중복 판정용) |
+| `model` | TEXT | 사용한 모델 이름 |
+| `dim` | INTEGER | 벡터 차원 |
+| `vector` | BLOB | float32 little-endian (numpy 의존성 없음) |
+| `created_at` | TEXT | UTC ISO 타임스탬프 |
+
+벡터 복원 (Python):
+
+```python
+import array, sqlite3
+conn = sqlite3.connect("~/mail-archive/index.sqlite")
+row = conn.execute("SELECT vector, dim FROM embeddings WHERE msgid=?", (msgid,)).fetchone()
+vec = list(array.array("f", row[0]))   # length == row[1]
+```
+
+#### 토큰 우선순위
+
+**env `EMBEDDING_TOKEN` > config.toml `[embedding].token`** (LLM 토큰과 별개).
+
+#### 로그
+
+`<archive>/.embed.log.jsonl` — 배치별 (msgids, model, dim, input_tokens, status).
 
 ---
 

@@ -170,6 +170,45 @@ KNOWN_KEYS: dict[str, KeySpec] = {
         default=["Junk", "Spam", "Deleted Items"],
         description="처리에서 제외할 폴더 이름 목록 (부분 일치, 쉼표 구분).",
     ),
+    # ── embedding ───────────────────────────────────────────────────────────
+    "embedding.endpoint": _ks(
+        "embedding.endpoint", type="str",
+        default="https://api.openai.com/v1",
+        description="OpenAI 호환 /v1/embeddings 엔드포인트 (OpenAI · Ollama · LM Studio 등).",
+    ),
+    "embedding.token": _ks(
+        "embedding.token", type="str", default="", sensitive=True,
+        description="Embedding API 토큰 (비워두면 env EMBEDDING_TOKEN 을 사용 — 권장). Ollama 는 빈 문자열 허용.",
+    ),
+    "embedding.model": _ks(
+        "embedding.model", type="str", default="text-embedding-3-small",
+        description="모델 이름 (예: text-embedding-3-small, text-embedding-3-large, nomic-embed-text).",
+    ),
+    "embedding.timeout": _ks(
+        "embedding.timeout", type="int", default=60,
+        description="요청 타임아웃(초).",
+    ),
+    "embedding.max_retries": _ks(
+        "embedding.max_retries", type="int", default=3,
+        description="실패 시 최대 재시도 횟수 (5xx/429/타임아웃).",
+    ),
+    "embedding.concurrency": _ks(
+        "embedding.concurrency", type="int", default=4,
+        description="동시 embedding 호출 수.",
+    ),
+    "embedding.batch_size": _ks(
+        "embedding.batch_size", type="int", default=64,
+        description="한 HTTP 요청에 묶을 텍스트 개수 (OpenAI 최대 2048).",
+    ),
+    "embedding.skip_body_shorter_than": _ks(
+        "embedding.skip_body_shorter_than", type="int", default=100,
+        description="본문 길이가 이 값(바이트) 미만이면 embedding 을 건너뜀.",
+    ),
+    "embedding.skip_folders": _ks(
+        "embedding.skip_folders", type="list",
+        default=["Junk", "Spam", "Deleted Items"],
+        description="처리에서 제외할 폴더 이름 목록 (부분 일치, 쉼표 구분).",
+    ),
 }
 
 

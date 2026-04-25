@@ -102,6 +102,31 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # True 이면 mailview 시작 시 새 MD 파일이 있을 때 인덱스를 자동 갱신한다.
         "auto_index": True,
     },
+    "embedding": {
+        # OpenAI 호환 /v1/embeddings 엔드포인트
+        # OpenAI:    https://api.openai.com/v1
+        # Ollama:    http://localhost:11434/v1  (Ollama 0.1.x + /v1/embeddings 호환)
+        # LM Studio / 기타 호환 서버: 각자의 base URL
+        "endpoint": "https://api.openai.com/v1",
+        # API 토큰 (env EMBEDDING_TOKEN 이 우선). Ollama 는 빈 문자열 허용.
+        "token": "",
+        # 모델 이름
+        # OpenAI: text-embedding-3-small | text-embedding-3-large
+        # Ollama: nomic-embed-text | mxbai-embed-large
+        "model": "text-embedding-3-small",
+        # 요청 타임아웃 (초)
+        "timeout": 60,
+        # 실패 시 최대 재시도 횟수
+        "max_retries": 3,
+        # 동시 embedding 호출 수
+        "concurrency": 4,
+        # 한 HTTP 요청에 묶을 텍스트 개수 (OpenAI 는 2048 까지 허용)
+        "batch_size": 64,
+        # 본문 길이가 이 값 미만이면 embedding skip
+        "skip_body_shorter_than": 100,
+        # embedding skip 할 폴더 이름 목록 (부분 일치)
+        "skip_folders": ["Junk", "Spam", "Deleted Items"],
+    },
     "llm": {
         # LLM provider: openai | anthropic | ollama
         "provider": "openai",
@@ -371,6 +396,23 @@ def init_config_file(
         f'glow_style = ""\n'
         f"# mailview 시작 시 새 MD 파일이 있으면 인덱스를 자동 갱신한다.\n"
         f"auto_index = true\n"
+        f"\n"
+        f"[embedding]\n"
+        f"# OpenAI 호환 /v1/embeddings 엔드포인트\n"
+        f"#   OpenAI:  https://api.openai.com/v1\n"
+        f"#   Ollama:  http://localhost:11434/v1\n"
+        f'endpoint = "https://api.openai.com/v1"\n'
+        f"# API 토큰 (env EMBEDDING_TOKEN 이 우선). Ollama 는 빈 문자열 허용.\n"
+        f'token = ""\n'
+        f"# 모델: text-embedding-3-small | text-embedding-3-large | nomic-embed-text | ...\n"
+        f'model = "text-embedding-3-small"\n'
+        f"timeout = 60\n"
+        f"max_retries = 3\n"
+        f"concurrency = 4\n"
+        f"# 한 HTTP 요청에 묶을 텍스트 개수\n"
+        f"batch_size = 64\n"
+        f"skip_body_shorter_than = 100\n"
+        f'skip_folders = ["Junk", "Spam", "Deleted Items"]\n'
     )
 
     if plat == "windows":
@@ -397,6 +439,20 @@ def llm_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     if cfg is None:
         cfg = load_config()
     return cfg.get("llm", copy.deepcopy(DEFAULT_CONFIG["llm"]))
+
+
+def embedding_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Embedding 설정 dict 를 반환한다.
+
+    Args:
+        cfg: load_config() 결과. None 이면 내부에서 새로 로드한다.
+
+    Returns:
+        cfg["embedding"] dict (DEFAULT_CONFIG["embedding"] 와 병합된 값).
+    """
+    if cfg is None:
+        cfg = load_config()
+    return cfg.get("embedding", copy.deepcopy(DEFAULT_CONFIG["embedding"]))
 
 
 # ---------------------------------------------------------------------------

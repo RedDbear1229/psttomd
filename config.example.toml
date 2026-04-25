@@ -157,3 +157,36 @@ skip_body_shorter_than = 100
 
 # 처리에서 제외할 폴더 이름 목록 (부분 일치)
 skip_folders = ["Junk", "Spam", "Deleted Items"]
+
+# ── embedding 설정 ────────────────────────────────────────────────────────
+# `embed` 명령이 MD 본문을 float 벡터로 변환해 index.sqlite 에 저장합니다.
+# OpenAI 호환 /v1/embeddings 엔드포인트만 사용하므로 provider 필드가 없습니다
+# (엔드포인트 + 모델로 결정).
+#
+#   OpenAI:    https://api.openai.com/v1            + text-embedding-3-small
+#   Ollama:    http://localhost:11434/v1            + nomic-embed-text
+#   LM Studio: http://localhost:1234/v1             + 로드된 모델명
+[embedding]
+
+endpoint = "https://api.openai.com/v1"
+
+# API 토큰 (비워두면 환경변수 EMBEDDING_TOKEN 을 사용합니다 — 권장).
+# Ollama 등 토큰 불필요한 서버는 빈 문자열로 두세요.
+token = ""
+
+model = "text-embedding-3-small"
+
+timeout = 60
+max_retries = 3
+
+# 동시 embedding 호출 수 (CPU 코어 × 2 이하 권장).
+concurrency = 4
+
+# 한 HTTP 요청에 묶을 텍스트 개수 (OpenAI 는 2048 까지 허용).
+batch_size = 64
+
+# 본문 길이가 이 값(바이트) 미만이면 embedding 을 건너뜁니다.
+skip_body_shorter_than = 100
+
+# 처리에서 제외할 폴더 이름 목록 (부분 일치).
+skip_folders = ["Junk", "Spam", "Deleted Items"]

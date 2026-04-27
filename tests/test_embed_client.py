@@ -157,7 +157,7 @@ class TestEmbed:
         mock_http.post.return_value = _mock_response(500, "boom")
         client._http = mock_http
 
-        with patch("scripts.lib.embed_client._backoff"):
+        with patch("scripts.lib.http_retry.backoff"):
             with pytest.raises(RuntimeError, match="3회 실패"):
                 client.embed(["x"])
         assert mock_http.post.call_count == 3
@@ -168,7 +168,7 @@ class TestEmbed:
         mock_http.post.return_value = _mock_response(429, "limit")
         client._http = mock_http
 
-        with patch("scripts.lib.embed_client._backoff"):
+        with patch("scripts.lib.http_retry.backoff"):
             with pytest.raises(RuntimeError):
                 client.embed(["x"])
         assert mock_http.post.call_count == 2
@@ -186,7 +186,7 @@ class TestEmbed:
         mock_http.post.side_effect = [fail, ok]
         client._http = mock_http
 
-        with patch("scripts.lib.embed_client._backoff"):
+        with patch("scripts.lib.http_retry.backoff"):
             out = client.embed(["x"])
         assert out.dim == 1
         assert mock_http.post.call_count == 2

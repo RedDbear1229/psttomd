@@ -14,27 +14,14 @@ provider 분기 없음 — 엔드포인트가 전부 결정.
 """
 from __future__ import annotations
 
-import os
-import time
 from dataclasses import dataclass
 from typing import Any
 
-try:
-    import httpx as _httpx
-    _NETWORK_ERRORS: tuple[type[Exception], ...] = (
-        _httpx.HTTPError,
-        _httpx.RequestError,
-        OSError,
-        ValueError,
-    )
-except ImportError:
-    _httpx = None  # type: ignore[assignment]
-    _NETWORK_ERRORS = (OSError, ValueError)
-
-
-_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
-_MAX_BACKOFF_SECONDS = 16
-_ERROR_TEXT_LIMIT = 200
+from scripts.lib.http_retry import (
+    build_httpx_client,
+    post_with_retry,
+    resolve_token,
+)
 
 
 @dataclass
@@ -53,26 +40,12 @@ class EmbeddingResponse:
     input_tokens: int = 0
 
 
-def _backoff(attempt: int) -> None:
-    """지수 백오프: attempt 0 → 1s, 1 → 2s, 2 → 4s."""
-    time.sleep(min(2 ** attempt, _MAX_BACKOFF_SECONDS))
-
-
 def _resolve_token(emb_cfg: dict[str, Any]) -> str:
-    """EMBEDDING_TOKEN env → config token 순으로 토큰을 반환한다."""
-    env = os.environ.get("EMBEDDING_TOKEN", "").strip()
-    return env if env else emb_cfg.get("token", "")
+    """EMBEDDING_TOKEN env → config token 순으로 토큰을 반환한다.
 
-
-def _build_httpx_client(cfg: dict[str, Any]) -> Any:
-    """httpx.Client 를 반환한다. httpx 는 선택적 의존성이므로 임포트 시 확인."""
-    if _httpx is None:
-        raise ImportError(
-            "httpx 가 설치되어 있지 않습니다. "
-            "pip install httpx  또는  pip install -e '.[mailenrich]'"
-        )
-    timeout = cfg.get("embedding", {}).get("timeout", 60)
-    return _httpx.Client(timeout=timeout)
+    얇은 래퍼 — 기존 테스트와 호출자 호환을 위해 유지한다.
+    """
+    return resolve_token("EMBEDDING_TOKEN", emb_cfg)
 
 
 class EmbeddingClient:
@@ -88,7 +61,7 @@ class EmbeddingClient:
         self._model: str = emb.get("model") or "text-embedding-3-small"
         self._max_retries: int = int(emb.get("max_retries", 3))
         self._token: str = _resolve_token(emb)
-        self._http = _build_httpx_client(cfg)
+        self._http = build_httpx_client(timeout=int(emb.get("timeout", 60)))
 
         if not self._endpoint:
             self._endpoint = "https://api.openai.com/v1"
@@ -123,37 +96,15 @@ class EmbeddingClient:
             "encoding_format": "float",
         }
 
-        resp = self._post_with_retry(
-            f"{self._endpoint}/embeddings", headers, payload,
+        resp = post_with_retry(
+            self._http,
+            f"{self._endpoint}/embeddings",
+            headers,
+            payload,
+            self._max_retries,
+            name="EmbeddingClient",
         )
         return self._parse(resp.json(), expected=len(texts))
-
-    def _post_with_retry(
-        self,
-        url: str,
-        headers: dict[str, str],
-        payload: dict[str, Any],
-    ) -> Any:
-        """POST 요청을 max_retries 회 재시도하며 응답을 반환한다."""
-        last_exc: Exception | None = None
-        for attempt in range(self._max_retries):
-            try:
-                resp = self._http.post(url, headers=headers, json=payload)
-                if resp.status_code in _RETRY_STATUSES:
-                    last_exc = ValueError(
-                        f"HTTP {resp.status_code}: {resp.text[:_ERROR_TEXT_LIMIT]}"
-                    )
-                    _backoff(attempt)
-                    continue
-                resp.raise_for_status()
-                return resp
-            except _NETWORK_ERRORS as exc:
-                last_exc = exc
-                _backoff(attempt)
-
-        raise RuntimeError(
-            f"EmbeddingClient 호출 {self._max_retries}회 실패: {last_exc}"
-        ) from last_exc
 
     def _parse(self, data: dict[str, Any], *, expected: int) -> EmbeddingResponse:
         """OpenAI `/v1/embeddings` 응답 JSON 을 파싱한다.
@@ -172,8 +123,7 @@ class EmbeddingClient:
                 f"got={len(items) if isinstance(items, list) else 'non-list'}"
             )
 
-        # index 기준 정렬 (대부분 이미 정렬돼 있으나 스펙상 순서 보장 없음)
-        ordered: list[list[float]] = [[]] * expected
+        ordered: list[list[float]] = [[] for _ in range(expected)]
         for item in items:
             idx = int(item.get("index", 0))
             vec = item.get("embedding")

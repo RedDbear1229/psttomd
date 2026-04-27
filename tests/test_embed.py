@@ -35,6 +35,7 @@ from scripts.embed import (
     main as embed_main,
 )
 from scripts.lib.embed_client import EmbeddingResponse
+from scripts.lib.md_io import body_hash, split
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +146,6 @@ class TestCollectCandidates:
         archive = _archive(tmp_path)
         md = _write_md(archive, "<m1@x>")
         # body_hash 를 미리 계산
-        from scripts.lib.md_io import body_hash, split
         bh = body_hash(split(md))
 
         cands, skipped = _collect_candidates(
@@ -158,7 +158,6 @@ class TestCollectCandidates:
     def test_different_model_is_candidate(self, tmp_path: Path) -> None:
         archive = _archive(tmp_path)
         md = _write_md(archive, "<m1@x>")
-        from scripts.lib.md_io import body_hash, split
         bh = body_hash(split(md))
 
         cands, skipped = _collect_candidates(
@@ -181,7 +180,6 @@ class TestCollectCandidates:
     def test_force_ignores_existing(self, tmp_path: Path) -> None:
         archive = _archive(tmp_path)
         md = _write_md(archive, "<m1@x>")
-        from scripts.lib.md_io import body_hash, split
         bh = body_hash(split(md))
 
         cands, skipped = _collect_candidates(

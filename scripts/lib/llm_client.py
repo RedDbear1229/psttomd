@@ -14,34 +14,18 @@ mailenrich 가 사용하는 LLM 호출 추상화 레이어.
 from __future__ import annotations
 
 import json
-import os
-import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-# ---------------------------------------------------------------------------
-# 선택적 의존성: httpx (실제 HTTP 호출 시에만 필요)
-# ---------------------------------------------------------------------------
-
-try:
-    import httpx as _httpx
-    _NETWORK_ERRORS: tuple[type[Exception], ...] = (
-        _httpx.HTTPError,
-        _httpx.RequestError,
-        OSError,
-        ValueError,
-    )
-except ImportError:
-    _httpx = None  # type: ignore[assignment]
-    _NETWORK_ERRORS = (OSError, ValueError)
+from scripts.lib.http_retry import (
+    build_httpx_client,
+    post_with_retry,
+    resolve_token,
+)
 
 # ---------------------------------------------------------------------------
 # 상수
 # ---------------------------------------------------------------------------
-
-_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
-_MAX_BACKOFF_SECONDS = 16
-_ERROR_TEXT_LIMIT = 200
 
 _ENRICH_TOOL_NAME = "enrich_mail"
 _ENRICH_TOOL: dict[str, Any] = {
@@ -115,26 +99,12 @@ class LLMClient(Protocol):
 # 내부 헬퍼
 # ---------------------------------------------------------------------------
 
-def _backoff(attempt: int) -> None:
-    """지수 백오프: attempt 0 → 1s, 1 → 2s, 2 → 4s."""
-    time.sleep(min(2 ** attempt, _MAX_BACKOFF_SECONDS))
-
-
-def _build_httpx_client(cfg: dict[str, Any]) -> Any:
-    """httpx.Client 를 반환한다. httpx 는 선택적 의존성이므로 임포트 시 확인."""
-    if _httpx is None:
-        raise ImportError(
-            "httpx 가 설치되어 있지 않습니다. "
-            "pip install httpx  또는  pip install -e '.[mailenrich]'"
-        )
-    timeout = cfg.get("llm", {}).get("timeout", 60)
-    return _httpx.Client(timeout=timeout)
-
-
 def _resolve_token(llm_cfg: dict[str, Any]) -> str:
-    """LLM_TOKEN env → config token 순으로 토큰을 반환한다."""
-    env = os.environ.get("LLM_TOKEN", "").strip()
-    return env if env else llm_cfg.get("token", "")
+    """LLM_TOKEN env → config token 순으로 토큰을 반환한다.
+
+    얇은 래퍼 — 기존 테스트와 호출자 호환을 위해 유지한다.
+    """
+    return resolve_token("LLM_TOKEN", llm_cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -148,9 +118,9 @@ class _BaseClient:
         llm = cfg.get("llm", {})
         self._endpoint: str = llm.get("endpoint", "").rstrip("/")
         self._model: str = llm.get("model", "")
-        self._max_retries: int = llm.get("max_retries", 3)
+        self._max_retries: int = int(llm.get("max_retries", 3))
         self._token: str = _resolve_token(llm)
-        self._http = _build_httpx_client(cfg)
+        self._http = build_httpx_client(timeout=int(llm.get("timeout", 60)))
 
     def _post_with_retry(
         self,
@@ -171,25 +141,10 @@ class _BaseClient:
         Raises:
             RuntimeError: max_retries 초과 시.
         """
-        last_exc: Exception | None = None
-        for attempt in range(self._max_retries):
-            try:
-                resp = self._http.post(url, headers=headers, json=payload)
-                if resp.status_code in _RETRY_STATUSES:
-                    last_exc = ValueError(
-                        f"HTTP {resp.status_code}: {resp.text[:_ERROR_TEXT_LIMIT]}"
-                    )
-                    _backoff(attempt)
-                    continue
-                resp.raise_for_status()
-                return resp
-            except _NETWORK_ERRORS as exc:
-                last_exc = exc
-                _backoff(attempt)
-
-        raise RuntimeError(
-            f"{self.__class__.__name__} 호출 {self._max_retries}회 실패: {last_exc}"
-        ) from last_exc
+        return post_with_retry(
+            self._http, url, headers, payload,
+            self._max_retries, name=self.__class__.__name__,
+        )
 
 
 # ---------------------------------------------------------------------------

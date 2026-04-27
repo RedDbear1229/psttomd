@@ -125,7 +125,7 @@ class TestOpenAIClient:
         mock_http.post.return_value = _mock_httpx_response(500, "server error")
         client._http = mock_http
 
-        with patch("scripts.lib.llm_client._backoff"):  # skip actual sleep
+        with patch("scripts.lib.http_retry.backoff"):  # skip actual sleep
             with pytest.raises(RuntimeError, match="3회 실패"):
                 client.complete(LLMRequest(system="s", user="u"))
 
@@ -137,7 +137,7 @@ class TestOpenAIClient:
         mock_http.post.return_value = _mock_httpx_response(429, "rate limit")
         client._http = mock_http
 
-        with patch("scripts.lib.llm_client._backoff"):
+        with patch("scripts.lib.http_retry.backoff"):
             with pytest.raises(RuntimeError):
                 client.complete(LLMRequest(system="s", user="u"))
 
@@ -156,7 +156,7 @@ class TestOpenAIClient:
         mock_http.post.side_effect = [fail_resp, ok_resp]
         client._http = mock_http
 
-        with patch("scripts.lib.llm_client._backoff"):
+        with patch("scripts.lib.http_retry.backoff"):
             resp = client.complete(LLMRequest(system="s", user="u"))
 
         assert resp.text == "{}"
@@ -227,7 +227,7 @@ class TestAnthropicClient:
         mock_http.post.return_value = _mock_httpx_response(500, "error")
         client._http = mock_http
 
-        with patch("scripts.lib.llm_client._backoff"):
+        with patch("scripts.lib.http_retry.backoff"):
             with pytest.raises(RuntimeError):
                 client.complete(LLMRequest(system="s", user="u"))
 
@@ -284,7 +284,7 @@ class TestOllamaClient:
         mock_http.post.return_value = _mock_httpx_response(503, "unavailable")
         client._http = mock_http
 
-        with patch("scripts.lib.llm_client._backoff"):
+        with patch("scripts.lib.http_retry.backoff"):
             with pytest.raises(RuntimeError):
                 client.complete(LLMRequest(system="s", user="u"))
 
@@ -295,17 +295,17 @@ class TestOllamaClient:
 
 class TestGetClient:
     def test_returns_openai_client(self) -> None:
-        with patch("scripts.lib.llm_client._build_httpx_client", return_value=MagicMock()):
+        with patch("scripts.lib.llm_client.build_httpx_client", return_value=MagicMock()):
             client = get_client(_cfg(provider="openai"))
         assert isinstance(client, OpenAIClient)
 
     def test_returns_anthropic_client(self) -> None:
-        with patch("scripts.lib.llm_client._build_httpx_client", return_value=MagicMock()):
+        with patch("scripts.lib.llm_client.build_httpx_client", return_value=MagicMock()):
             client = get_client(_cfg(provider="anthropic"))
         assert isinstance(client, AnthropicClient)
 
     def test_returns_ollama_client(self) -> None:
-        with patch("scripts.lib.llm_client._build_httpx_client", return_value=MagicMock()):
+        with patch("scripts.lib.llm_client.build_httpx_client", return_value=MagicMock()):
             client = get_client(_cfg(provider="ollama"))
         assert isinstance(client, OllamaClient)
 

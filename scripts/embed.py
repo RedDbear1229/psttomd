@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from lib.config import archive_root, embedding_config, load_config
 from lib.embed_client import EmbeddingClient, EmbeddingResponse
 from lib.md_io import body_hash, split
+from lib.md_walk import iter_md_files, parse_date_filter
 
 log = logging.getLogger(__name__)
 
@@ -128,73 +129,6 @@ def _estimate_cost(model: str, tokens: int) -> float:
     """모델별 단가로 USD 비용을 추정한다."""
     rate = _COST_PER_TOKEN.get(model, _DEFAULT_COST_RATE)
     return tokens * rate
-
-
-# ---------------------------------------------------------------------------
-# 파일 이터레이터 (mailenrich 와 동일한 필터 규약)
-# ---------------------------------------------------------------------------
-
-def _parse_date_filter(s: str, label: str) -> tuple[int, int, int] | None:
-    """YYYY-MM-DD 문자열을 (y, m, d) 튜플로 파싱한다."""
-    if not s:
-        return None
-    parts = s.split("-")
-    if len(parts) != 3:
-        raise click.BadParameter(f"{label} 형식이 잘못되었습니다: {s!r} (YYYY-MM-DD 필요)")
-    try:
-        return (int(parts[0]), int(parts[1]), int(parts[2]))
-    except ValueError as exc:
-        raise click.BadParameter(f"{label} 숫자 변환 실패: {s!r}") from exc
-
-
-def _path_date(rel: Path) -> tuple[int, int, int] | None:
-    """archive/ 상대경로에서 (Y, M, D) 튜플을 추출한다. undated 는 None."""
-    parts = rel.parts
-    if len(parts) < 4:
-        return None
-    try:
-        return (int(parts[0]), int(parts[1]), int(parts[2]))
-    except ValueError:
-        return None
-
-
-def _iter_md_files(
-    archive: Path,
-    folders: tuple[str, ...],
-    limit: int,
-    skip_folders: list[str],
-    since: tuple[int, int, int] | None,
-    until: tuple[int, int, int] | None,
-) -> list[Path]:
-    """필터 조건에 맞는 MD 파일 목록을 정렬해 반환한다."""
-    md_dir = archive / "archive"
-    if not md_dir.exists():
-        return []
-
-    files: list[Path] = []
-    for md_path in sorted(md_dir.rglob("*.md")):
-        rel = md_path.relative_to(md_dir)
-        rel_str = str(rel)
-
-        if folders and not any(f.lower() in rel_str.lower() for f in folders):
-            continue
-        if any(sf.lower() in rel_str.lower() for sf in skip_folders):
-            continue
-
-        if since is not None or until is not None:
-            d = _path_date(rel)
-            if d is None:
-                continue
-            if since is not None and d < since:
-                continue
-            if until is not None and d > until:
-                continue
-
-        files.append(md_path)
-        if limit and len(files) >= limit:
-            break
-
-    return files
 
 
 # ---------------------------------------------------------------------------
@@ -403,9 +337,9 @@ def main(
     min_body = int(emb_cfg.get("skip_body_shorter_than", 100))
     skip_folders: list[str] = list(emb_cfg.get("skip_folders", []))
 
-    since_dt = _parse_date_filter(since, "--since")
-    until_dt = _parse_date_filter(until, "--until")
-    md_files = _iter_md_files(root, folders, limit, skip_folders, since_dt, until_dt)
+    since_dt = parse_date_filter(since, "--since")
+    until_dt = parse_date_filter(until, "--until")
+    md_files = iter_md_files(root, folders, limit, skip_folders, since_dt, until_dt)
     if not md_files:
         click.echo("처리할 MD 파일이 없습니다.")
         return

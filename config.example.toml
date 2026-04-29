@@ -101,12 +101,12 @@ auto_index = true
 #   "glow"  — 마크다운 렌더링 + 컬러. 이미지는 텍스트 링크로만 표시.
 #             sixel 미지원 터미널이거나 pager 사용을 선호할 때 사용.
 #
-# 설치:
-#   Linux/WSL:  cargo install mdcat  또는  sudo apt install mdcat(신버전 배포판)
-#   macOS:      brew install mdcat
-#   Windows:    winget install mdcat  또는  cargo install mdcat
+# 설치 (mdcat-ng — sixel 기능이 기본 활성화된 mdcat 후속 fork):
+#   모든 플랫폼:  cargo install mdcat-ng     (PATH 에는 'mdcat' 으로 설치됨)
 #
-# 기본 mdcat 권장 — 대부분 최신 터미널에서 이미지 인라인으로 동작.
+# 참고: mdcat-ng 는 cargo 로만 배포됩니다 (winget/brew/apt 패키지 없음).
+# 원본 mdcat (apt/brew/winget) 도 동일 바이너리명이며 본 프로젝트와 호환되지만,
+# sixel 인라인 이미지를 빌드 타임에 활성화한 mdcat-ng 를 권장합니다.
 # 구형 터미널(기본 cmd.exe, PuTTY 등)이면 "glow" 로 전환.
 preview_viewer = "mdcat"
 

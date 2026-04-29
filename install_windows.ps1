@@ -29,10 +29,10 @@ Write-Host "  아카이브:  $ArchiveRoot"
 Write-Host "  PST 백엔드: $Backend"
 Write-Host "========================================" -ForegroundColor Cyan
 
-# ── 1/4 winget 도구 설치 ─────────────────────────────────────────────────
+# ── 1/5 winget 도구 설치 ─────────────────────────────────────────────────
 if (-not $SkipWinget) {
     Write-Host ""
-    Write-Host "[1/4] CLI 도구 설치 (winget)..." -ForegroundColor Yellow
+    Write-Host "[1/5] CLI 도구 설치 (winget)..." -ForegroundColor Yellow
 
     $tools = @(
         @{ Id = "astral-sh.uv";                 Name = "uv" },
@@ -57,12 +57,29 @@ if (-not $SkipWinget) {
     }
 } else {
     Write-Host ""
-    Write-Host "[1/4] winget 설치 건너뜀 (-SkipWinget)" -ForegroundColor Yellow
+    Write-Host "[1/5] winget 설치 건너뜀 (-SkipWinget)" -ForegroundColor Yellow
 }
 
-# ── 2/4 uv 확인 및 fallback 설치 ─────────────────────────────────────────
+# ── 2/5 mdcat-ng (선택 — sixel 인라인 이미지 렌더) ───────────────────────
 Write-Host ""
-Write-Host "[2/4] uv 확인..." -ForegroundColor Yellow
+Write-Host "[2/5] mdcat-ng 설치 확인 (선택, sixel 인라인 이미지)..." -ForegroundColor Yellow
+if (Get-Command mdcat -ErrorAction SilentlyContinue) {
+    $mdcatVer = mdcat --version 2>&1 | Select-Object -First 1
+    Write-Host "  mdcat 이미 설치됨: $mdcatVer" -ForegroundColor Green
+} elseif (Get-Command cargo -ErrorAction SilentlyContinue) {
+    Write-Host "  cargo 로 mdcat-ng 설치 중 (수 분 소요)..."
+    cargo install mdcat-ng
+    Write-Host "  mdcat-ng 설치 완료" -ForegroundColor Green
+} else {
+    Write-Host "  cargo 미설치 → mdcat-ng 설치 건너뜀." -ForegroundColor Yellow
+    Write-Host "  나중에 'cargo install mdcat-ng' 로 설치하면 Windows Terminal 1.22+ 의"
+    Write-Host "  sixel 로 메일 이미지를 인라인 렌더할 수 있습니다 (미설치 시 glow 로 폴백)."
+    Write-Host "  rust 설치: https://rustup.rs  또는  winget install Rustlang.Rustup"
+}
+
+# ── 3/5 uv 확인 및 fallback 설치 ─────────────────────────────────────────
+Write-Host ""
+Write-Host "[3/5] uv 확인..." -ForegroundColor Yellow
 
 # winget 설치 후 PATH 갱신
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
@@ -80,9 +97,9 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 $uvVer = uv --version 2>&1
 Write-Host "  uv: $uvVer" -ForegroundColor Green
 
-# ── 3/4 Python 패키지 설치 ───────────────────────────────────────────────
+# ── 4/5 Python 패키지 설치 ───────────────────────────────────────────────
 Write-Host ""
-Write-Host "[3/4] Python 패키지 설치 (uv sync)..." -ForegroundColor Yellow
+Write-Host "[4/5] Python 패키지 설치 (uv sync)..." -ForegroundColor Yellow
 
 Set-Location $ScriptDir
 
@@ -107,9 +124,9 @@ if ($Backend -eq "win32com") {
 $pyVer = uv run python --version 2>&1
 Write-Host "  Python: $pyVer"
 
-# ── 4/4 설정 파일 생성 ───────────────────────────────────────────────────
+# ── 5/5 설정 파일 생성 ───────────────────────────────────────────────────
 Write-Host ""
-Write-Host "[4/4] 설정 파일 생성..." -ForegroundColor Yellow
+Write-Host "[5/5] 설정 파일 생성..." -ForegroundColor Yellow
 
 $ConfigDir = "$env:USERPROFILE\.pst2md"
 New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null

@@ -297,7 +297,7 @@ mailview --doctor           # 플랫폼/locale/fzf/glow/mdcat/bat/awk 진단 출
 #   preview + Enter 전체 열람 양쪽 모두 mdcat(기본)이 sixel/그래픽 프로토콜로 인라인 렌더.
 #   mdcat 미설치 시 자동으로 glow 폴백 (이미지는 텍스트 링크로만 표시).
 #   sixel 미지원 구형 터미널이면 `pst2md-config set-viewer glow` 로 전환.
-#   설치: winget install mdcat (Windows) / cargo install mdcat / brew install mdcat
+#   설치: cargo install mdcat-ng  (sixel 기본 활성화 fork, 바이너리는 'mdcat' 으로 설치됨)
 #   Enter 렌더링은 pager 미사용(less 경유 시 그래픽 깨짐) — 터미널 스크롤로 이동.
 
 # 통계

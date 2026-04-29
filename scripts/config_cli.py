@@ -370,7 +370,7 @@ def cmd_set_viewer(viewer: str) -> None:
     if viewer == "mdcat" and shutil.which("mdcat") is None:
         click.echo(
             "경고: mdcat 바이너리를 PATH 에서 찾지 못했습니다.\n"
-            "  설치: cargo install mdcat  |  brew install mdcat  |  winget install mdcat",
+            "  설치: cargo install mdcat-ng   (sixel 기본 활성화 fork, 바이너리명은 'mdcat')",
             err=True,
         )
     saved = save_setting("mailview", "preview_viewer", viewer)

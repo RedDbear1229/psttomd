@@ -19,9 +19,9 @@ echo "  설치 위치: $SCRIPT_DIR"
 echo "  아카이브:  $ARCHIVE_ROOT"
 echo "========================================"
 
-# ── 1/4 시스템 패키지 ────────────────────────────────────────────────────
+# ── 1/5 시스템 패키지 ────────────────────────────────────────────────────
 echo ""
-echo "[1/4] 시스템 패키지 설치..."
+echo "[1/5] 시스템 패키지 설치..."
 if command -v apt-get &>/dev/null; then
     sudo apt-get update -qq
     sudo apt-get install -y \
@@ -40,9 +40,9 @@ else
     echo "  경고: 패키지 매니저를 인식할 수 없습니다. 수동 설치가 필요할 수 있습니다."
 fi
 
-# ── 2/4 glow ─────────────────────────────────────────────────────────────
+# ── 2/5 glow ─────────────────────────────────────────────────────────────
 echo ""
-echo "[2/4] glow 설치 확인..."
+echo "[2/5] glow 설치 확인..."
 if ! command -v glow &>/dev/null; then
     if command -v snap &>/dev/null; then
         sudo snap install glow
@@ -66,9 +66,25 @@ else
     echo "  glow 이미 설치됨: $(glow --version 2>/dev/null)"
 fi
 
-# ── 3/4 uv + Python 패키지 ───────────────────────────────────────────────
+# ── 3/5 mdcat-ng (선택 — fzf preview / Enter 열람 인라인 이미지 렌더) ────
 echo ""
-echo "[3/4] uv 및 Python 패키지 설치..."
+echo "[3/5] mdcat-ng 설치 확인 (선택, sixel 인라인 이미지)..."
+if command -v mdcat &>/dev/null; then
+    echo "  mdcat 이미 설치됨: $(mdcat --version 2>/dev/null | head -1)"
+elif command -v cargo &>/dev/null; then
+    echo "  cargo 로 mdcat-ng 설치 중 (수 분 소요)..."
+    cargo install mdcat-ng
+    echo "  mdcat-ng 설치 완료: $(mdcat --version 2>/dev/null | head -1)"
+else
+    echo "  cargo 미설치 → mdcat-ng 설치 건너뜀."
+    echo "  나중에 'cargo install mdcat-ng' 로 설치하면 sixel/그래픽 프로토콜로"
+    echo "  메일의 이미지를 인라인 렌더할 수 있습니다 (미설치 시 glow 로 자동 폴백)."
+    echo "  rust 설치: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+fi
+
+# ── 4/5 uv + Python 패키지 ───────────────────────────────────────────────
+echo ""
+echo "[4/5] uv 및 Python 패키지 설치..."
 
 # uv 설치 (미설치 시)
 if ! command -v uv &>/dev/null; then
@@ -86,9 +102,9 @@ cd "$SCRIPT_DIR"
 uv sync --extra linux
 echo "  패키지 설치 완료: $(uv run python --version)"
 
-# ── 4/4 설정 파일 초기화 ─────────────────────────────────────────────────
+# ── 5/5 설정 파일 초기화 ─────────────────────────────────────────────────
 echo ""
-echo "[4/4] 설정 파일 초기화..."
+echo "[5/5] 설정 파일 초기화..."
 uv run python -c "
 import sys
 sys.path.insert(0, 'scripts')

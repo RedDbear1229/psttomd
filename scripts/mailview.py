@@ -52,6 +52,7 @@ import click
 
 sys.path.insert(0, str(Path(__file__).parent))
 from lib.config import load_config, db_path, archive_root, archive_roots, detect_platform
+from build_index import fts_has_prefix_index
 
 
 # ---------------------------------------------------------------------------
@@ -1589,6 +1590,10 @@ def auto_update_index(archive_root_path: Path, cfg: dict) -> None:
     archive/  하위 .md 파일 중 DB mtime 보다 새 파일이 있을 때만
     build_index.py 를 서브프로세스로 호출한다 (증분 모드).
 
+    staging.jsonl 이 없는데 새 MD 파일이 감지된 경우 (외부 복사 / 복원 /
+    pst2md --no-index 후) 증분 인덱싱은 무력해 0 행만 처리한다 — 이때
+    사용자에게 ``build-index --rebuild`` 권장 메시지를 출력한다 (P5).
+
     Args:
         archive_root_path: 아카이브 루트 디렉터리 Path.
         cfg:               load_config() 결과.
@@ -1611,6 +1616,17 @@ def auto_update_index(archive_root_path: Path, cfg: dict) -> None:
         for p in archive_dir.rglob("*.md")
     )
     if not has_new:
+        return
+
+    # staging 없이 새 MD 가 있으면 증분 인덱싱이 무의미 — rebuild 권장.
+    staging = archive_root_path / "index_staging.jsonl"
+    if not staging.exists():
+        click.echo(
+            "[auto-index] 새 MD 파일이 감지되었으나 staging.jsonl 이 없습니다.\n"
+            "             외부 복사 / 복원 / pst2md --no-index 후라면 인덱스가\n"
+            "             누락된 상태일 수 있습니다. 권장: build-index --rebuild",
+            err=True,
+        )
         return
 
     build_script = Path(__file__).parent / "build_index.py"
@@ -1643,6 +1659,61 @@ def _bin_version(path: Optional[str], flag: str = "--version") -> str:
         return out.splitlines()[0] if out else ""
     except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
         return ""
+
+
+def _doctor_index_health(db: Path, root: Path) -> list[str]:
+    """인덱스 무결성 진단 — DB 행수 vs 파일수 mismatch + prefix index 보유.
+
+    rebuild 권장 상황을 사용자가 즉시 알 수 있도록 명확한 권장 명령을
+    출력한다. 읽기 전용 — 수정 작업은 하지 않는다.
+
+    Args:
+        db:   index.sqlite 경로.
+        root: 아카이브 루트 (archive/ 의 상위).
+
+    Returns:
+        출력할 진단 라인 목록.
+    """
+    lines: list[str] = []
+    try:
+        conn = sqlite3.connect(str(db))
+        try:
+            db_rows = conn.execute(
+                "SELECT COUNT(*) FROM messages"
+            ).fetchone()[0]
+            has_prefix = fts_has_prefix_index(conn)
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        lines.append(f"index health   : DB 읽기 실패 — {exc}")
+        return lines
+
+    archive_dir = root / "archive"
+    md_count = (
+        sum(1 for _ in archive_dir.rglob("*.md")) if archive_dir.exists() else 0
+    )
+    diff = md_count - db_rows
+    mark = "✓" if diff == 0 else "⚠"
+    lines.append(
+        f"index rows     : DB={db_rows:>6}  files={md_count:>6}  diff={diff:+d} {mark}"
+    )
+    if diff != 0:
+        if diff > 0:
+            lines.append(
+                "                 → MD 가 DB 보다 많음. build-index --rebuild 권장."
+            )
+        else:
+            lines.append(
+                "                 → DB 가 MD 보다 많음 (고아 행). build-index --rebuild 권장."
+            )
+    if not has_prefix:
+        lines.append(
+            "fts prefix     : ⚠ prefix index 없음 — 한글 부분일치 검색이 약함.\n"
+            "                 권장: build-index --rebuild (prefix='2 3 4' 적용)"
+        )
+    else:
+        lines.append("fts prefix     : prefix='2 3 4' ✓")
+    return lines
 
 
 def run_doctor() -> None:
@@ -1693,6 +1764,9 @@ def run_doctor() -> None:
         if db.exists():
             size_mb = db.stat().st_size / (1024 * 1024)
             click.echo(f"index.sqlite   : {db} ({size_mb:.1f} MB) ✓")
+            # 인덱스 무결성 — DB 행수 vs archive/ 의 .md 파일 수 (P5)
+            for line in _doctor_index_health(db, root):
+                click.echo(line)
         else:
             click.echo(f"index.sqlite   : {db} ⚠ (없음 — build-index 실행 필요)")
 

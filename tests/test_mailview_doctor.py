@@ -14,9 +14,14 @@ from click.testing import CliRunner
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
+from mailview import _doctor_index_health  # noqa: E402
 from mailview import build_fzf_preview_cmd  # noqa: E402
 from mailview import main as mailview_main  # noqa: E402
 from mailview import run_doctor  # noqa: E402
+
+import sqlite3  # noqa: E402
+
+from build_index import init_schema  # noqa: E402
 
 
 class TestDoctorOutput:
@@ -139,3 +144,73 @@ class TestPreviewCmd:
         assert "mdcat.exe" in cmd
         assert "%FZF_PREVIEW_COLUMNS%" in cmd
         assert "--local" in cmd
+
+
+class TestDoctorIndexHealth:
+    """_doctor_index_health(db, root) 단위 테스트 (P5)."""
+
+    @staticmethod
+    def _seed_db(db: Path, n_rows: int) -> None:
+        """init_schema 적용 후 messages 테이블에 n_rows 개 삽입."""
+        conn = sqlite3.connect(str(db))
+        try:
+            init_schema(conn)
+            for i in range(n_rows):
+                conn.execute(
+                    "INSERT INTO messages (msgid, path) VALUES (?, ?)",
+                    (f"<m{i}>", f"archive/2024/01/01/m{i}.md"),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_match_clean(self, tmp_path: Path) -> None:
+        """DB 행수 == MD 파일수 면 diff 0 + ✓ 표시."""
+        db = tmp_path / "index.sqlite"
+        archive = tmp_path / "archive" / "2024" / "01" / "01"
+        archive.mkdir(parents=True)
+        for i in range(3):
+            (archive / f"m{i}.md").write_text("---\nx: y\n---\n", encoding="utf-8")
+        self._seed_db(db, 3)
+        lines = _doctor_index_health(db, tmp_path)
+        joined = "\n".join(lines)
+        assert "DB=     3" in joined or "DB=3" in joined.replace(" ", "")
+        assert "diff=+0" in joined
+        assert "✓" in joined
+
+    def test_more_files_than_rows(self, tmp_path: Path) -> None:
+        """파일이 많으면 rebuild 권장 메시지가 나온다."""
+        db = tmp_path / "index.sqlite"
+        archive = tmp_path / "archive" / "2024"
+        archive.mkdir(parents=True)
+        for i in range(5):
+            (archive / f"m{i}.md").write_text("---\nx: y\n---\n", encoding="utf-8")
+        self._seed_db(db, 2)
+        lines = _doctor_index_health(db, tmp_path)
+        joined = "\n".join(lines)
+        assert "diff=+3" in joined
+        assert "build-index --rebuild" in joined
+        assert "⚠" in joined
+
+    def test_orphan_rows_detected(self, tmp_path: Path) -> None:
+        """DB 행이 더 많으면 (고아) 음수 diff + rebuild 권장."""
+        db = tmp_path / "index.sqlite"
+        archive = tmp_path / "archive" / "2024"
+        archive.mkdir(parents=True)
+        (archive / "m0.md").write_text("---\nx: y\n---\n", encoding="utf-8")
+        self._seed_db(db, 4)
+        lines = _doctor_index_health(db, tmp_path)
+        joined = "\n".join(lines)
+        assert "diff=-3" in joined
+        assert "고아" in joined
+        assert "build-index --rebuild" in joined
+
+    def test_prefix_index_present(self, tmp_path: Path) -> None:
+        """init_schema 가 prefix='2 3 4' 를 적용해 doctor 가 ✓ 표시."""
+        db = tmp_path / "index.sqlite"
+        (tmp_path / "archive").mkdir()
+        self._seed_db(db, 0)
+        lines = _doctor_index_health(db, tmp_path)
+        joined = "\n".join(lines)
+        assert "fts prefix" in joined
+        assert "prefix='2 3 4'" in joined or "✓" in joined

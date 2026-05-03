@@ -806,8 +806,8 @@ class TestAutoUpdateIndex:
             auto_update_index(tmp_path, cfg)
         mock_run.assert_not_called()
 
-    def test_new_file_triggers_subprocess(self, tmp_path):
-        """DB 보다 새 MD 파일이 있으면 build_index.py 를 호출한다."""
+    def test_new_file_with_staging_triggers_subprocess(self, tmp_path):
+        """DB 보다 새 MD + staging.jsonl 있으면 build_index.py 를 호출한다."""
         import time
         db = self._make_db(tmp_path)
         archive_dir = tmp_path / "archive" / "2024" / "01" / "01"
@@ -816,8 +816,11 @@ class TestAutoUpdateIndex:
         # MD 파일을 DB 보다 나중에 생성
         time.sleep(0.01)
         md.write_text("---\nsubject: test\n---\nbody", encoding="utf-8")
+        # staging 파일 존재 — pst2md 가 만든 정상 시나리오
+        (tmp_path / "index_staging.jsonl").write_text(
+            '{"msgid":"<x>","path":"x.md"}\n', encoding="utf-8"
+        )
         cfg = self._cfg(tmp_path)
-        mock_result = patch("mailview.subprocess.run").__enter__ if False else None
         with patch("mailview.db_path", return_value=db), \
              patch("mailview.subprocess.run",
                    return_value=type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
@@ -827,6 +830,25 @@ class TestAutoUpdateIndex:
         call_args = mock_run.call_args[0][0]  # argv list
         assert any("build_index.py" in a for a in call_args)
         assert str(tmp_path) in call_args
+
+    def test_missing_staging_with_new_files_warns_no_subprocess(self, tmp_path, capsys):
+        """P5: staging 누락 + 새 MD → subprocess 미호출 + rebuild 권장 경고."""
+        import time
+        db = self._make_db(tmp_path)
+        archive_dir = tmp_path / "archive" / "2024" / "01" / "01"
+        archive_dir.mkdir(parents=True)
+        md = archive_dir / "test.md"
+        time.sleep(0.01)
+        md.write_text("---\nsubject: test\n---\nbody", encoding="utf-8")
+        # staging.jsonl 없음
+        cfg = self._cfg(tmp_path)
+        with patch("mailview.db_path", return_value=db), \
+             patch("mailview.subprocess.run") as mock_run:
+            auto_update_index(tmp_path, cfg)
+        mock_run.assert_not_called()
+        captured = capsys.readouterr()
+        assert "staging.jsonl" in captured.err
+        assert "rebuild" in captured.err
 
 
 # ---------------------------------------------------------------------------

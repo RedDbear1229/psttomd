@@ -31,28 +31,59 @@ from lib.config import load_config, db_path, archive_roots
 # FTS5 쿼리 이스케이프
 # ---------------------------------------------------------------------------
 
-def _escape_fts5(query: str) -> str:
-    """FTS5 쿼리 문자열을 이스케이프한다.
+#: FTS5 token 으로 안전하게 인용해야 하는 문자 (영숫자/유니코드 letter 외).
+#: ``+``, ``-``, ``:``, ``/``, ``.``, ``@``, ``(``, ``)``, ``*``, ``^`` 등 모두 포함.
+_FTS_UNSAFE_RE = re.compile(r"[^\w]", re.UNICODE)
 
-    큰따옴표를 이중 따옴표로 이스케이프하고,
-    FTS5 연산자(*, (), ^)가 포함된 경우 구문 검색 따옴표로 감싼다.
-    AND / OR / NOT 대문자 연산자는 그대로 허용한다.
+
+def _escape_fts5(query: str) -> str:
+    """사용자 입력을 FTS5 MATCH 절에 안전하게 들어가는 phrase 로 감싼다.
+
+    공백으로 토큰을 분리한 뒤 각 토큰을 따옴표로 감싼다 (phrase query).
+    영숫자만 있는 토큰도 일관성과 안전성을 위해 동일하게 인용한다.
+    내부 큰따옴표는 ``""`` 로 이스케이프된다.
+
+    이 함수는 *기본* (안전) 모드 전용이다. 사용자가 ``AND/OR/NOT``,
+    ``*``, ``:`` 같은 FTS5 연산자를 직접 쓰고 싶다면 mailgrep ``--raw-fts``
+    플래그를 사용해 raw 쿼리 경로로 보내야 한다.
 
     Args:
         query: 사용자 입력 검색어.
 
     Returns:
-        FTS5 MATCH 절에 사용할 이스케이프된 문자열.
+        FTS5 MATCH 절에 사용할 안전한 phrase 식 문자열. 토큰이 없으면 빈 문자열.
+
+    Example:
+        >>> _escape_fts5("C++")
+        '"C++"'
+        >>> _escape_fts5("a@b.com 2024-05")
+        '"a@b.com" "2024-05"'
     """
     query = query.strip()
     if not query:
         return ""
-    # " → "" (FTS5 리터럴 이스케이프)
-    query = query.replace('"', '""')
-    # 특수 연산자 문자가 있으면 구문 검색으로 처리
-    if re.search(r'[*()\^]', query):
-        return f'"{query}"'
-    return query
+    tokens = [t for t in query.split() if t]
+    quoted: list[str] = []
+    for tok in tokens:
+        # 내부 따옴표 이스케이프
+        safe = tok.replace('"', '""')
+        quoted.append(f'"{safe}"')
+    return " ".join(quoted)
+
+
+def _build_fts_match(raw: str, raw_fts: bool) -> str:
+    """FTS5 MATCH 인자를 안전 모드 / raw 모드에 따라 빌드한다.
+
+    Args:
+        raw:     사용자 입력 토큰.
+        raw_fts: True 면 사용자 입력을 그대로 전달 (FTS5 연산자 직접 사용).
+
+    Returns:
+        MATCH 절에 들어갈 문자열.
+    """
+    if raw_fts:
+        return raw.strip()
+    return _escape_fts5(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +203,7 @@ def build_query(
     body_filter: str = "",
     subject_query: str = "",
     has_attachment: bool = False,
+    raw_fts: bool = False,
 ) -> tuple[str, list]:
     """검색 조건에 맞는 SQL 쿼리와 바인딩 파라미터를 생성한다.
 
@@ -198,6 +230,8 @@ def build_query(
         body_filter:    본문 전용 검색어. ``body:term`` 형식으로 FTS5 에 추가.
         subject_query:  제목 전용 검색어. ``subject:term`` 형식으로 FTS5 에 추가.
         has_attachment: True 이면 n_attachments > 0 조건을 추가.
+        raw_fts:        True 면 query/body/subject 입력을 FTS5 raw 쿼리로 전달
+                        (안전 인용 우회 — 고급 사용자용).
 
     Returns:
         (sql_string, params_list) 튜플.
@@ -211,11 +245,11 @@ def build_query(
     # subject_query→ 제목 컬럼 한정 검색 (subject:term)
     fts_parts: list[str] = []
     if query:
-        fts_parts.append(_escape_fts5(query))
+        fts_parts.append(_build_fts_match(query, raw_fts))
     if body_filter:
-        fts_parts.append(f"body:{_escape_fts5(body_filter)}")
+        fts_parts.append(f"body:({_build_fts_match(body_filter, raw_fts)})")
     if subject_query:
-        fts_parts.append(f"subject:{_escape_fts5(subject_query)}")
+        fts_parts.append(f"subject:({_build_fts_match(subject_query, raw_fts)})")
 
     use_fts = bool(fts_parts)
     if use_fts:
@@ -286,6 +320,9 @@ def build_query(
         "  mailgrep '계약서'                          제목·발신자·본문 전체 검색\n"
         "  mailgrep '계약' --from 홍길동              발신자 필터와 AND\n"
         "  mailgrep --body 'payment'                  본문 전용 검색\n"
+        "  mailgrep --subject '견적'                  제목 전용 검색\n"
+        "  mailgrep 'C++' 'a@b.com'                   특수문자 토큰 (자동 안전 인용)\n"
+        "  mailgrep --raw-fts 'foo OR bar*'           FTS5 raw 모드 (고급)\n"
         "  mailgrep 'invoice' --after 2023-01-01      날짜 범위\n"
         "  mailgrep '' --folder 'Inbox/계약'          폴더 필터만\n"
         "  mailgrep 'bug' --smart from:alice has:attachment\n"
@@ -309,6 +346,10 @@ def build_query(
               help="스레드 ID 정확 일치 (예: t_abc123de).")
 @click.option("--body",      "body_filter", default="", metavar="QUERY",
               help="본문 전용 검색 (FTS5 body 컬럼).")
+@click.option("--subject",   "subject_filter", default="", metavar="QUERY",
+              help="제목 전용 검색 (FTS5 subject 컬럼).")
+@click.option("--raw-fts",   "raw_fts", is_flag=True,
+              help="입력을 FTS5 raw 쿼리로 전달 (AND/OR/NOT/*/: 사용 가능).")
 @click.option("--limit",     default=50, show_default=True, metavar="N",
               help="최대 결과 수.")
 @click.option("--json",      "output_json", is_flag=True,
@@ -323,7 +364,8 @@ def build_query(
               help="config 의 archive.roots 에 등록된 모든 아카이브 검색.")
 def main(
     query, from_filter, to_filter, after, before, folder, thread,
-    body_filter, limit, output_json, paths_only, archive, smart, all_archives,
+    body_filter, subject_filter, raw_fts, limit, output_json, paths_only,
+    archive, smart, all_archives,
 ):
     """SQLite FTS5 기반 메일 아카이브 검색.
 
@@ -347,7 +389,8 @@ def main(
         sys.exit(1)
 
     # ── 스마트 쿼리 파싱 ────────────────────────────────────────────────
-    subject_query = ""
+    # --subject CLI 옵션 우선, 없으면 smart 모드의 subject:키워드 사용.
+    subject_query = subject_filter
     has_attachment = False
     if smart and query:
         parsed = parse_smart_query(query)
@@ -357,7 +400,7 @@ def main(
         after        = after        or parsed["after"]
         before       = before       or parsed["before"]
         folder       = folder       or parsed["folder"]
-        subject_query = parsed["subject_query"]
+        subject_query = subject_query or parsed["subject_query"]
         has_attachment = parsed["has_attachment"]
 
     # 검색 조건이 전혀 없으면 도움말 안내
@@ -387,7 +430,7 @@ def main(
         sql, params = build_query(
             conn, query, from_filter, to_filter, after, before,
             folder, thread, limit, output_json, paths_only, body_filter,
-            subject_query, has_attachment,
+            subject_query, has_attachment, raw_fts,
         )
         try:
             rows_all.extend(conn.execute(sql, params).fetchall())

@@ -8,16 +8,23 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-from mailgrep import _escape_fts5, build_query, parse_smart_query, _expand_month
+from mailgrep import (  # noqa: E402
+    _build_fts_match,
+    _escape_fts5,
+    build_query,
+    parse_smart_query,
+    _expand_month,
+)
 
 
 # ---------------------------------------------------------------------------
-# _escape_fts5
+# _escape_fts5 — 안전 모드: 모든 토큰을 phrase 로 인용
 # ---------------------------------------------------------------------------
 
 class TestEscapeFts5:
-    def test_plain_keyword(self):
-        assert _escape_fts5("hello") == "hello"
+    def test_plain_keyword_quoted(self):
+        """일반 토큰도 일관성을 위해 인용한다."""
+        assert _escape_fts5("hello") == '"hello"'
 
     def test_empty_string(self):
         assert _escape_fts5("") == ""
@@ -26,33 +33,46 @@ class TestEscapeFts5:
         assert _escape_fts5("   ") == ""
 
     def test_double_quote_escaped(self):
+        """입력 따옴표는 ""로 이스케이프되고 phrase 로 감싸진다."""
         result = _escape_fts5('say "hello"')
         assert '""' in result
-
-    def test_asterisk_wrapped(self):
-        result = _escape_fts5("hello*")
         assert result.startswith('"') and result.endswith('"')
 
-    def test_parenthesis_wrapped(self):
-        result = _escape_fts5("(test)")
-        assert result.startswith('"') and result.endswith('"')
+    def test_special_chars_safe(self):
+        """+, :, /, ., @, *, (), ^ 같은 문자도 안전하게 인용된다."""
+        for tok in ("C++", "a@b.com", "2024-05", "foo/bar", "x*y", "(test)", "^start"):
+            assert _escape_fts5(tok) == f'"{tok}"', tok
 
-    def test_caret_wrapped(self):
-        result = _escape_fts5("^start")
-        assert result.startswith('"') and result.endswith('"')
-
-    def test_and_operator_not_wrapped(self):
-        """AND/OR/NOT 연산자는 그대로 허용"""
+    def test_and_operator_quoted_in_safe_mode(self):
+        """안전 모드에서 AND/OR/NOT 도 일반 토큰으로 인용 (raw-fts 가 아닌 한)."""
         result = _escape_fts5("hello AND world")
-        assert result == "hello AND world"
+        assert result == '"hello" "AND" "world"'
 
-    def test_korean_keyword(self):
-        result = _escape_fts5("견적서")
-        assert result == "견적서"
+    def test_korean_keyword_quoted(self):
+        assert _escape_fts5("견적서") == '"견적서"'
+
+    def test_multiple_tokens_each_quoted(self):
+        result = _escape_fts5("foo bar baz")
+        assert result == '"foo" "bar" "baz"'
 
     def test_strips_leading_trailing_spaces(self):
-        result = _escape_fts5("  keyword  ")
-        assert result == "keyword"
+        assert _escape_fts5("  keyword  ") == '"keyword"'
+
+
+# ---------------------------------------------------------------------------
+# _build_fts_match — raw vs safe 모드 디스패처
+# ---------------------------------------------------------------------------
+
+class TestBuildFtsMatch:
+    def test_safe_mode_quotes_token(self):
+        assert _build_fts_match("hello", raw_fts=False) == '"hello"'
+
+    def test_raw_mode_passes_through(self):
+        """raw 모드에선 사용자가 직접 FTS5 연산자를 쓸 수 있다."""
+        assert _build_fts_match("foo OR bar*", raw_fts=True) == "foo OR bar*"
+
+    def test_raw_mode_strips_whitespace(self):
+        assert _build_fts_match("  foo AND bar  ", raw_fts=True) == "foo AND bar"
 
 
 # ---------------------------------------------------------------------------
@@ -80,14 +100,23 @@ class TestBuildQuery:
             dummy_conn, "invoice", "", "", "", "", "", "", 50, False, False
         )
         assert "MATCH" in sql
-        assert "invoice" in params
+        # 안전 모드에서 토큰은 phrase 로 인용됨
+        assert '"invoice"' in params[0]
 
     def test_body_filter_prefix(self, dummy_conn):
         sql, params = build_query(
             dummy_conn, "", "", "", "", "", "", "", 50, False, False,
             body_filter="payment"
         )
-        assert "body:payment" in params[0]
+        # body:(...) 컬럼 한정 phrase
+        assert 'body:("payment")' in params[0]
+
+    def test_subject_filter_prefix(self, dummy_conn):
+        sql, params = build_query(
+            dummy_conn, "", "", "", "", "", "", "", 50, False, False,
+            subject_query="견적"
+        )
+        assert 'subject:("견적")' in params[0]
 
     def test_combined_query_and_body(self, dummy_conn):
         sql, params = build_query(
@@ -95,8 +124,28 @@ class TestBuildQuery:
             body_filter="amount"
         )
         match_param = params[0]
-        assert "invoice" in match_param
-        assert "body:amount" in match_param
+        assert '"invoice"' in match_param
+        assert 'body:("amount")' in match_param
+
+    def test_special_chars_in_query_do_not_break(self, dummy_conn):
+        """C++, 이메일 주소, 날짜 형식 같은 punctuation 이 OperationalError 없이 통과."""
+        sql, params = build_query(
+            dummy_conn, "C++ a@b.com 2024-05", "", "", "", "",
+            "", "", 50, False, False,
+        )
+        # 모든 토큰이 phrase 로 인용되어야 함
+        match_param = params[0]
+        assert '"C++"' in match_param
+        assert '"a@b.com"' in match_param
+        assert '"2024-05"' in match_param
+
+    def test_raw_fts_passes_through(self, dummy_conn):
+        """raw_fts=True 면 사용자 입력이 그대로 FTS 절에 들어간다."""
+        sql, params = build_query(
+            dummy_conn, "foo OR bar*", "", "", "", "",
+            "", "", 50, False, False, raw_fts=True,
+        )
+        assert params[0] == "foo OR bar*"
 
     def test_from_filter_like(self, dummy_conn):
         sql, params = build_query(

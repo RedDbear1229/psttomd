@@ -353,7 +353,9 @@ def extract_frontmatter(md_path: Path) -> dict | None:
                 m.group(1).lower() if m else meta.get("from", "").lower()
             )
 
-        # 첨부 파일 수 계산: "  - name:" 패턴 카운트
+        # 첨부 파일 수 계산: 인라인(`- {name: ...}`) + 블록(`- name: ...`) 양쪽 지원.
+        # pst2md 는 인라인 포맷으로 출력하지만 외부 편집/마이그레이션으로 블록 포맷이
+        # 섞일 수 있어 둘 다 카운트한다.
         n_att = 0
         in_att = False
         for line in fm_text.splitlines():
@@ -364,7 +366,7 @@ def extract_frontmatter(md_path: Path) -> dict | None:
             if in_att:
                 if not line.startswith(" ") and stripped:
                     break
-                if re.match(r"\s+-\s+name:", line):
+                if re.match(r"\s+-\s+(\{)?\s*name\s*:", line):
                     n_att += 1
         meta["n_attachments"] = n_att
 

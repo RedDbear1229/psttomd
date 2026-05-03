@@ -12,7 +12,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from build_index import extract_frontmatter  # noqa: E402
+import sqlite3  # noqa: E402
+
+from build_index import (  # noqa: E402
+    extract_frontmatter,
+    fts_has_prefix_index,
+    init_schema,
+)
 
 
 def _write_md(tmp_path: Path, frontmatter: str, body: str = "본문\n") -> Path:
@@ -92,3 +98,37 @@ class TestAttachmentCount:
         meta = extract_frontmatter(_write_md(tmp_path, fm))
         assert meta is not None
         assert meta["n_attachments"] == 1
+
+
+# ---------------------------------------------------------------------------
+# FTS5 prefix index 감지 (P3)
+# ---------------------------------------------------------------------------
+
+class TestFtsPrefixIndex:
+    def test_init_schema_creates_prefix_index(self) -> None:
+        """init_schema 가 새 DB 에 prefix='2 3 4' 옵션을 적용한다."""
+        conn = sqlite3.connect(":memory:")
+        try:
+            init_schema(conn)
+            assert fts_has_prefix_index(conn) is True
+        finally:
+            conn.close()
+
+    def test_legacy_fts_without_prefix_detected(self) -> None:
+        """구버전 (prefix 없음) 스키마는 fts_has_prefix_index 가 False."""
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.execute(
+                "CREATE VIRTUAL TABLE messages_fts USING fts5("
+                "subject, body, content='', tokenize='unicode61')"
+            )
+            assert fts_has_prefix_index(conn) is False
+        finally:
+            conn.close()
+
+    def test_no_table_returns_false(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        try:
+            assert fts_has_prefix_index(conn) is False
+        finally:
+            conn.close()

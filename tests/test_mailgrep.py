@@ -18,13 +18,17 @@ from mailgrep import (  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# _escape_fts5 — 안전 모드: 모든 토큰을 phrase 로 인용
+# _escape_fts5 — 안전 모드: 모든 토큰을 phrase 로 인용 + prefix wildcard
 # ---------------------------------------------------------------------------
 
 class TestEscapeFts5:
-    def test_plain_keyword_quoted(self):
-        """일반 토큰도 일관성을 위해 인용한다."""
-        assert _escape_fts5("hello") == '"hello"'
+    def test_plain_keyword_quoted_with_wildcard(self):
+        """기본 모드: phrase 인용 + prefix wildcard 부착."""
+        assert _escape_fts5("hello") == '"hello"*'
+
+    def test_prefix_match_disabled(self):
+        """prefix_match=False 면 wildcard 미부착."""
+        assert _escape_fts5("hello", prefix_match=False) == '"hello"'
 
     def test_empty_string(self):
         assert _escape_fts5("") == ""
@@ -36,27 +40,28 @@ class TestEscapeFts5:
         """입력 따옴표는 ""로 이스케이프되고 phrase 로 감싸진다."""
         result = _escape_fts5('say "hello"')
         assert '""' in result
-        assert result.startswith('"') and result.endswith('"')
+        assert '"' in result
 
     def test_special_chars_safe(self):
         """+, :, /, ., @, *, (), ^ 같은 문자도 안전하게 인용된다."""
         for tok in ("C++", "a@b.com", "2024-05", "foo/bar", "x*y", "(test)", "^start"):
-            assert _escape_fts5(tok) == f'"{tok}"', tok
+            assert _escape_fts5(tok, prefix_match=False) == f'"{tok}"', tok
 
     def test_and_operator_quoted_in_safe_mode(self):
         """안전 모드에서 AND/OR/NOT 도 일반 토큰으로 인용 (raw-fts 가 아닌 한)."""
-        result = _escape_fts5("hello AND world")
+        result = _escape_fts5("hello AND world", prefix_match=False)
         assert result == '"hello" "AND" "world"'
 
-    def test_korean_keyword_quoted(self):
-        assert _escape_fts5("견적서") == '"견적서"'
+    def test_korean_keyword_quoted_with_wildcard(self):
+        """P3: 한글 짧은 query 는 prefix wildcard 로 견적서/견적가 잡는다."""
+        assert _escape_fts5("견적") == '"견적"*'
 
     def test_multiple_tokens_each_quoted(self):
         result = _escape_fts5("foo bar baz")
-        assert result == '"foo" "bar" "baz"'
+        assert result == '"foo"* "bar"* "baz"*'
 
     def test_strips_leading_trailing_spaces(self):
-        assert _escape_fts5("  keyword  ") == '"keyword"'
+        assert _escape_fts5("  keyword  ") == '"keyword"*'
 
 
 # ---------------------------------------------------------------------------
@@ -64,8 +69,11 @@ class TestEscapeFts5:
 # ---------------------------------------------------------------------------
 
 class TestBuildFtsMatch:
-    def test_safe_mode_quotes_token(self):
-        assert _build_fts_match("hello", raw_fts=False) == '"hello"'
+    def test_safe_mode_quotes_token_with_wildcard(self):
+        assert _build_fts_match("hello", raw_fts=False) == '"hello"*'
+
+    def test_safe_mode_can_disable_prefix(self):
+        assert _build_fts_match("hello", raw_fts=False, prefix_match=False) == '"hello"'
 
     def test_raw_mode_passes_through(self):
         """raw 모드에선 사용자가 직접 FTS5 연산자를 쓸 수 있다."""
@@ -73,6 +81,55 @@ class TestBuildFtsMatch:
 
     def test_raw_mode_strips_whitespace(self):
         assert _build_fts_match("  foo AND bar  ", raw_fts=True) == "foo AND bar"
+
+
+# ---------------------------------------------------------------------------
+# 한글 부분일치 — 실제 SQLite FTS5 + prefix index 통합 (P3)
+# ---------------------------------------------------------------------------
+
+class TestKoreanPartialMatch:
+    """unicode61 + prefix='2 3 4' + _escape_fts5 wildcard 의 종단 동작 검증."""
+
+    @pytest.fixture
+    def fts_db(self):
+        conn = sqlite3.connect(":memory:")
+        conn.execute(
+            "CREATE VIRTUAL TABLE m USING fts5("
+            "subject, body, tokenize='unicode61', prefix='2 3 4')"
+        )
+        rows = [
+            ("견적서 발송", "내일까지 견적서 보내드립니다."),
+            ("계약서 검토", "계약서 첨부 드립니다."),
+            ("회의록 정리", "회의록 작성 완료."),
+            ("invoice", "Please review the invoice for 2024-05."),
+        ]
+        conn.executemany("INSERT INTO m(subject, body) VALUES (?, ?)", rows)
+        yield conn
+        conn.close()
+
+    def _match_count(self, conn, query: str) -> int:
+        match = _escape_fts5(query)
+        return conn.execute("SELECT COUNT(*) FROM m WHERE m MATCH ?", (match,)).fetchone()[0]
+
+    def test_partial_korean_two_chars(self, fts_db):
+        """'견적' 2글자 query 가 견적서 토큰을 잡아야 한다."""
+        assert self._match_count(fts_db, "견적") == 1
+
+    def test_partial_korean_other_words(self, fts_db):
+        """계약·회의 같은 다른 한글 prefix 도 동일하게 동작."""
+        assert self._match_count(fts_db, "계약") == 1
+        assert self._match_count(fts_db, "회의") == 1
+
+    def test_full_token_still_matches(self, fts_db):
+        """완전한 토큰도 prefix wildcard 와 함께 정상 매칭."""
+        assert self._match_count(fts_db, "견적서") == 1
+
+    def test_english_prefix(self, fts_db):
+        """영어 prefix 도 동일 — 'invo' → invoice."""
+        assert self._match_count(fts_db, "invo") == 1
+
+    def test_no_match_for_unknown(self, fts_db):
+        assert self._match_count(fts_db, "없는단어") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -100,23 +157,23 @@ class TestBuildQuery:
             dummy_conn, "invoice", "", "", "", "", "", "", 50, False, False
         )
         assert "MATCH" in sql
-        # 안전 모드에서 토큰은 phrase 로 인용됨
-        assert '"invoice"' in params[0]
+        # 안전 모드에서 토큰은 phrase 로 인용 + prefix wildcard
+        assert '"invoice"*' in params[0]
 
     def test_body_filter_prefix(self, dummy_conn):
         sql, params = build_query(
             dummy_conn, "", "", "", "", "", "", "", 50, False, False,
             body_filter="payment"
         )
-        # body:(...) 컬럼 한정 phrase
-        assert 'body:("payment")' in params[0]
+        # body:(...) 컬럼 한정 phrase + wildcard
+        assert 'body:("payment"*)' in params[0]
 
     def test_subject_filter_prefix(self, dummy_conn):
         sql, params = build_query(
             dummy_conn, "", "", "", "", "", "", "", 50, False, False,
             subject_query="견적"
         )
-        assert 'subject:("견적")' in params[0]
+        assert 'subject:("견적"*)' in params[0]
 
     def test_combined_query_and_body(self, dummy_conn):
         sql, params = build_query(
@@ -124,8 +181,8 @@ class TestBuildQuery:
             body_filter="amount"
         )
         match_param = params[0]
-        assert '"invoice"' in match_param
-        assert 'body:("amount")' in match_param
+        assert '"invoice"*' in match_param
+        assert 'body:("amount"*)' in match_param
 
     def test_special_chars_in_query_do_not_break(self, dummy_conn):
         """C++, 이메일 주소, 날짜 형식 같은 punctuation 이 OperationalError 없이 통과."""
@@ -133,11 +190,11 @@ class TestBuildQuery:
             dummy_conn, "C++ a@b.com 2024-05", "", "", "", "",
             "", "", 50, False, False,
         )
-        # 모든 토큰이 phrase 로 인용되어야 함
+        # 모든 토큰이 phrase 로 인용 + wildcard 부착
         match_param = params[0]
-        assert '"C++"' in match_param
-        assert '"a@b.com"' in match_param
-        assert '"2024-05"' in match_param
+        assert '"C++"*' in match_param
+        assert '"a@b.com"*' in match_param
+        assert '"2024-05"*' in match_param
 
     def test_raw_fts_passes_through(self, dummy_conn):
         """raw_fts=True 면 사용자 입력이 그대로 FTS 절에 들어간다."""

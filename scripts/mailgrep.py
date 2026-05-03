@@ -36,54 +36,64 @@ from lib.config import load_config, db_path, archive_roots
 _FTS_UNSAFE_RE = re.compile(r"[^\w]", re.UNICODE)
 
 
-def _escape_fts5(query: str) -> str:
+def _escape_fts5(query: str, prefix_match: bool = True) -> str:
     """사용자 입력을 FTS5 MATCH 절에 안전하게 들어가는 phrase 로 감싼다.
 
     공백으로 토큰을 분리한 뒤 각 토큰을 따옴표로 감싼다 (phrase query).
     영숫자만 있는 토큰도 일관성과 안전성을 위해 동일하게 인용한다.
     내부 큰따옴표는 ``""`` 로 이스케이프된다.
 
+    ``prefix_match=True`` (기본) 면 각 phrase 끝에 ``*`` 를 붙여 prefix
+    검색을 활성화한다. 인덱스가 ``prefix='2 3 4'`` 로 생성되어 있어야
+    효율적이며, 한글 짧은 query 가 단어 prefix 를 잡는 데 필수다
+    (예: ``"견적"*`` → 견적서/견적가 매칭).
+
     이 함수는 *기본* (안전) 모드 전용이다. 사용자가 ``AND/OR/NOT``,
     ``*``, ``:`` 같은 FTS5 연산자를 직접 쓰고 싶다면 mailgrep ``--raw-fts``
     플래그를 사용해 raw 쿼리 경로로 보내야 한다.
 
     Args:
-        query: 사용자 입력 검색어.
+        query:        사용자 입력 검색어.
+        prefix_match: True 면 각 phrase 뒤에 ``*`` 추가.
 
     Returns:
         FTS5 MATCH 절에 사용할 안전한 phrase 식 문자열. 토큰이 없으면 빈 문자열.
 
     Example:
-        >>> _escape_fts5("C++")
+        >>> _escape_fts5("견적")
+        '"견적"*'
+        >>> _escape_fts5("C++", prefix_match=False)
         '"C++"'
         >>> _escape_fts5("a@b.com 2024-05")
-        '"a@b.com" "2024-05"'
+        '"a@b.com"* "2024-05"*'
     """
     query = query.strip()
     if not query:
         return ""
+    suffix = "*" if prefix_match else ""
     tokens = [t for t in query.split() if t]
     quoted: list[str] = []
     for tok in tokens:
         # 내부 따옴표 이스케이프
         safe = tok.replace('"', '""')
-        quoted.append(f'"{safe}"')
+        quoted.append(f'"{safe}"{suffix}')
     return " ".join(quoted)
 
 
-def _build_fts_match(raw: str, raw_fts: bool) -> str:
+def _build_fts_match(raw: str, raw_fts: bool, prefix_match: bool = True) -> str:
     """FTS5 MATCH 인자를 안전 모드 / raw 모드에 따라 빌드한다.
 
     Args:
-        raw:     사용자 입력 토큰.
-        raw_fts: True 면 사용자 입력을 그대로 전달 (FTS5 연산자 직접 사용).
+        raw:          사용자 입력 토큰.
+        raw_fts:      True 면 사용자 입력을 그대로 전달 (FTS5 연산자 직접 사용).
+        prefix_match: 안전 모드일 때 prefix wildcard ``*`` 를 추가할지.
 
     Returns:
         MATCH 절에 들어갈 문자열.
     """
     if raw_fts:
         return raw.strip()
-    return _escape_fts5(raw)
+    return _escape_fts5(raw, prefix_match=prefix_match)
 
 
 # ---------------------------------------------------------------------------

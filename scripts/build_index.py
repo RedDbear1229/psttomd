@@ -60,7 +60,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_from_addr ON messages(from_addr);
 CREATE INDEX IF NOT EXISTS idx_messages_thread    ON messages(thread);
 CREATE INDEX IF NOT EXISTS idx_messages_folder    ON messages(folder);
 
--- FTS5 contentless 가상 테이블: 본문 자체는 저장하지 않고 인덱스만 유지
+-- FTS5 contentless 가상 테이블: 본문 자체는 저장하지 않고 인덱스만 유지.
+-- prefix='2 3 4' 는 토큰의 2/3/4 글자 prefix 를 미리 인덱스해 mailgrep
+-- 안전 모드의 자동 wildcard ("견적"*) 가 견적서·견적가 등을 O(log n) 으로
+-- 잡게 한다.  unicode61 단독으로는 한글 부분일치가 토큰 경계에 묶여
+-- "견적" → "견적서" 매칭이 실패한다 (P3 fix).
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     subject,
     from_name,
@@ -68,7 +72,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     to_addrs,
     body,
     content='',
-    tokenize='unicode61'
+    tokenize='unicode61',
+    prefix='2 3 4'
 );
 
 -- FTS5 rowid ↔ msgid 매핑 테이블 (rebuild 시 중복 방지용)
@@ -107,10 +112,34 @@ def get_conn(archive_root: Path) -> sqlite3.Connection:
     return conn
 
 
+def fts_has_prefix_index(conn: sqlite3.Connection) -> bool:
+    """messages_fts 테이블이 ``prefix='2 3 4'`` 옵션으로 생성되었는지 확인한다.
+
+    sqlite_master 의 원본 CREATE 문을 검사한다.  CREATE VIRTUAL TABLE 은
+    옵션을 SQL 문에 그대로 보관하므로 정규식 없이 substring 매치로 충분하다.
+
+    Args:
+        conn: 활성 SQLite 연결.
+
+    Returns:
+        prefix index 가 있으면 True. 테이블이 없거나 옵션이 누락이면 False.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+    ).fetchone()
+    if not row or not row[0]:
+        return False
+    return "prefix=" in row[0].lower()
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     """데이터베이스에 스키마를 적용한다 (CREATE TABLE IF NOT EXISTS).
 
     기존 DB 에 n_attachments 열이 없으면 마이그레이션으로 추가한다.
+    messages_fts 가 prefix index 없이 생성되었던 (구버전) 경우 경고만
+    출력하고 자동 마이그레이션은 하지 않는다 — contentless FTS5 는 원본
+    데이터가 없어 단순 ALTER 가 불가능하므로 사용자가 ``--rebuild`` 로
+    명시적 재구축해야 한다.
 
     Args:
         conn: 활성 SQLite 연결.
@@ -125,6 +154,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
     if "in_reply_to" not in cols:
         conn.execute("ALTER TABLE messages ADD COLUMN in_reply_to TEXT DEFAULT ''")
     conn.commit()
+
+    if not fts_has_prefix_index(conn):
+        log.warning(
+            "messages_fts 가 prefix index 없이 생성된 구버전 스키마입니다. "
+            "한글 부분일치 검색 품질을 위해 'build-index --rebuild' 권장."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -281,9 +316,13 @@ def rebuild_from_archive(conn: sqlite3.Connection, archive_root: Path) -> int:
     """
     log.info("인덱스 초기화...")
     conn.execute("DELETE FROM messages")
-    # FTS5 contentless 테이블은 DELETE 미지원 → 전용 delete-all 커맨드 사용
-    conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('delete-all')")
+    # 구버전 스키마(prefix 옵션 없음) 자동 마이그레이션을 위해 fts 테이블을
+    # drop & recreate. 이전 'delete-all' 만 했더니 옵션이 그대로 유지됐다.
+    conn.execute("DROP TABLE IF EXISTS messages_fts")
     conn.execute("DELETE FROM fts_sync")
+    conn.commit()
+    # init_schema 에 정의된 새 스키마로 재생성 (prefix='2 3 4' 포함).
+    conn.executescript(SCHEMA_SQL)
     conn.commit()
 
     md_files = list((archive_root / "archive").rglob("*.md"))

@@ -25,6 +25,7 @@ from mailview import (
     _visual_truncate,
     _visual_pad,
     _read_frontmatter_fields,
+    _build_fzf_exec_commands,
     handle_delete_message,
     handle_bulk_delete,
     auto_update_index,
@@ -1223,3 +1224,66 @@ class TestFormatThreadTree:
         tree = [(0, "/a.md", "<a>", "Important subject")]
         lines = format_thread_tree(tree)
         assert any("Important subject" in l for l in lines)
+
+
+# ---------------------------------------------------------------------------
+# _build_fzf_exec_commands — P1/P2 body/subject reload 명령
+# ---------------------------------------------------------------------------
+
+class TestBuildFzfExecCommands:
+    """fzf bind 에 들어가는 reload 명령 문자열 조립을 검증한다.
+
+    Ctrl-B 본문 / Ctrl-S 제목 모드는 ``--fzf-input --body {q}`` /
+    ``--fzf-input --subject {q}`` 형식의 명령을 매 입력마다 fzf 의
+    ``change:transform`` 핸들러가 평가해 DB reload 를 트리거한다.
+    """
+
+    @staticmethod
+    def _cmds(plat: str = "linux") -> dict:
+        return _build_fzf_exec_commands(
+            plat=plat,
+            py="/usr/bin/python",
+            script_path="/p/mailview.py",
+            archive_path="/arc",
+            editor="vim",
+            bat_path="/usr/bin/bat",
+            fzf_path="/usr/bin/fzf",
+            iso_dates={
+                "today": "2026-01-01", "week": "2025-12-25",
+                "month": "2025-12-04", "year": "2025-01-01",
+            },
+            fzf_colors="dark",
+        )
+
+    def test_body_reload_includes_q_placeholder(self):
+        """body_reload 에 fzf {q} 플레이스홀더가 들어 있어야 매 입력마다 평가된다."""
+        cmds = self._cmds("linux")
+        assert "--body '{q}'" in cmds["body_reload"]
+        assert "--fzf-input" in cmds["body_reload"]
+
+    def test_subject_reload_present_and_uses_subject_flag(self):
+        """P2 신규: subject_reload 명령이 --subject {q} 를 포함해야 한다."""
+        cmds = self._cmds("linux")
+        assert "subject_reload" in cmds
+        assert "--subject '{q}'" in cmds["subject_reload"]
+        assert "--fzf-input" in cmds["subject_reload"]
+
+    def test_body_and_subject_reload_differ_only_in_flag(self):
+        """body 와 subject reload 는 플래그만 달라야 한다 (대칭성)."""
+        cmds = self._cmds("linux")
+        body = cmds["body_reload"]
+        subj = cmds["subject_reload"]
+        assert body.replace("--body", "--subject") == subj
+
+    def test_windows_uses_double_quotes(self):
+        """Windows 분기에서는 큰따옴표를 사용해야 한다 (cmd /c 호환)."""
+        cmds = self._cmds("windows")
+        assert '--body "{q}"' in cmds["body_reload"]
+        assert '--subject "{q}"' in cmds["subject_reload"]
+
+    def test_reset_reload_has_no_filter_args(self):
+        """reset_reload 는 추가 필터 없이 fzf-input 만 호출 (기본 recent 목록)."""
+        cmds = self._cmds("linux")
+        assert "--body" not in cmds["reset_reload"]
+        assert "--subject" not in cmds["reset_reload"]
+        assert "--fzf-input" in cmds["reset_reload"]

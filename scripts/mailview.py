@@ -1773,6 +1773,7 @@ def _build_fzf_exec_commands(
         "bat_cmd":          f"{q}{bat_path}{q} --style=full {q}{{2}}{q}" if bat_path else None,
         "pager_cmd":        f"{pager_name} {q}{{2}}{q}",
         "body_reload":      fzf_input(f"--body {q}{{q}}{q}"),
+        "subject_reload":   fzf_input(f"--subject {q}{{q}}{q}"),
         "reset_reload":     fzf_input(),
         "sort_from_reload": fzf_input("--sort from"),
         "sort_subj_reload": fzf_input("--sort subject"),
@@ -1802,7 +1803,8 @@ def _build_fzf_exec_commands(
         "  Enter  전체 열람 (mdcat 또는 glow — preview_viewer 설정)\n"
         "  Esc    쿼리 · 필터 초기화 (Ctrl-R 동일)\n"
         "  :q+Enter  종료 (Linux/WSL, vim 스타일)\n"
-        "  Alt-S/F/T  발신자/폴더/태그 필터 (sub-fzf)\n"
+        "  Ctrl-S  제목검색(DB)   Ctrl-B  본문검색(DB)\n"
+        "  Alt-F/T  폴더/태그 필터 (sub-fzf)\n"
         "  Ctrl-A/U   첨부/URL 열기    Ctrl-X 삭제\n"
         "\n"
         "한글 입력 문제: docs/hangul-input.md 참고."
@@ -1821,6 +1823,8 @@ def _build_fzf_exec_commands(
               help="스레드 ID 정확 일치 (예: t_abc123de).")
 @click.option("--body",    "body_filter", default="", metavar="QUERY",
               help="본문 전용 검색 (FTS5 body 컬럼).")
+@click.option("--subject", "subject_filter", default="", metavar="QUERY",
+              help="제목 전용 검색 (FTS5 subject 컬럼).")
 @click.option("--archive", default="", metavar="DIR",
               help="아카이브 루트 (기본: config archive.root).")
 @click.option("--dedupe",  is_flag=True,
@@ -1860,7 +1864,8 @@ def _build_fzf_exec_commands(
               help="내부용: fzf-input 정렬 기준 (date|from|subject)")
 def main(
     query, from_filter, after, before, folder, thread,
-    body_filter, archive, dedupe, dry_run, doctor, _open_att, _open_url, _delete_msg,
+    body_filter, subject_filter, archive, dedupe, dry_run, doctor,
+    _open_att, _open_url, _delete_msg,
     _fzf_input, _show_help, _fzf_bulk_delete, _list_folders, _get_thread,
     _tag_msg, _list_tags, tag_filter, _show_stats, _thread_tree, sort,
 ):
@@ -1956,18 +1961,19 @@ def main(
             click.echo(row[0])
         return
 
-    # ── fzf reload 출력 모드 (Ctrl-B / Ctrl-F / Ctrl-T / Ctrl-R / Alt-* ) ──
+    # ── fzf reload 출력 모드 (Ctrl-B / Ctrl-S / Ctrl-F / Ctrl-T / Ctrl-R / Alt-* ) ──
     if _fzf_input:
         cfg, db = _load_cfg_db(archive)
         archive_arg = ["--archive", cfg["archive"]["root"]] if archive else []
         if tag_filter:
             # 태그 필터는 직접 DB 쿼리 (mailgrep 경유 불필요)
             paths = get_paths_by_tag(db, tag_filter)
-        elif body_filter or folder or thread:
+        elif body_filter or subject_filter or folder or thread:
             extra: list[str] = []
-            if body_filter: extra += ["--body",   body_filter]
-            if folder:      extra += ["--folder", folder]
-            if thread:      extra += ["--thread", thread]
+            if body_filter:    extra += ["--body",    body_filter]
+            if subject_filter: extra += ["--subject", subject_filter]
+            if folder:         extra += ["--folder",  folder]
+            if thread:         extra += ["--thread",  thread]
             paths = get_paths_from_query(archive_arg + extra)
         else:
             paths = get_recent_paths(db, after=after, sort=sort)
@@ -1992,14 +1998,15 @@ def main(
     bat_path  = _check_tool("bat", cfg)
 
     # ── 경로 목록 수집 ────────────────────────────────────────────────────
-    if query or from_filter or after or before or folder or thread or body_filter:
+    if query or from_filter or after or before or folder or thread or body_filter or subject_filter:
         extra: list[str] = []
-        if from_filter:  extra += ["--from",   from_filter]
-        if after:        extra += ["--after",  after]
-        if before:       extra += ["--before", before]
-        if folder:       extra += ["--folder", folder]
-        if thread:       extra += ["--thread", thread]
-        if body_filter:  extra += ["--body",   body_filter]
+        if from_filter:    extra += ["--from",    from_filter]
+        if after:          extra += ["--after",   after]
+        if before:         extra += ["--before",  before]
+        if folder:         extra += ["--folder",  folder]
+        if thread:         extra += ["--thread",  thread]
+        if body_filter:    extra += ["--body",    body_filter]
+        if subject_filter: extra += ["--subject", subject_filter]
         paths = get_paths_from_query([query] + extra if query else extra)
     else:
         paths = get_recent_paths(db)
@@ -2073,6 +2080,7 @@ def main(
         bat_cmd          = _cmds["bat_cmd"]
         pager_cmd        = _cmds["pager_cmd"]
         body_reload      = _cmds["body_reload"]
+        subject_reload   = _cmds["subject_reload"]
         reset_reload     = _cmds["reset_reload"]
         sort_from_reload = _cmds["sort_from_reload"]
         sort_subj_reload = _cmds["sort_subj_reload"]
@@ -2127,12 +2135,26 @@ def main(
                 f" --fzf-input --tag-filter '%%s' --archive {q}{archive_path}{q})\""
                 f" \"$TAG\" \"$TAG\""
             )
+            # change: 키 입력마다 prompt 를 보고 본문/제목 모드면 DB reload.
+            # 일반 모드(검색>) 는 fzf 로컬 필터링만 — transform 은 빈 문자열 출력.
+            # 빈 쿼리는 reload 생략(mailgrep 인수 없음 에러 방지).
+            mode_transform = (
+                'case "$FZF_PROMPT" in '
+                '"본문검색> ") '
+                '[ -n "$FZF_QUERY" ] && '
+                f'echo \"reload({body_reload})\" ;; '
+                '"제목검색> ") '
+                '[ -n "$FZF_QUERY" ] && '
+                f'echo \"reload({subject_reload})\" ;; '
+                'esac'
+            )
         else:
             # Windows: 검색 하이라이트 없이 glow 미리보기 유지
             search_preview_cmd = preview_cmd
             folder_transform   = ""
             thread_transform   = ""
             tag_transform      = ""
+            mode_transform     = ""
 
         fzf_cmd = [
             fzf_path,
@@ -2155,7 +2177,7 @@ def main(
             "--delimiter", "\t",
             "--with-nth", "1",
             "--header-lines", "1",
-            "--header", "Enter:열람  Tab:선택  Ctrl-B:검색강조  Ctrl-F:폴더  Esc:필터초기화  :q+Enter:종료  ?:도움말",
+            "--header", "Enter:열람  Tab:선택  Ctrl-S:제목검색  Ctrl-B:본문검색  Ctrl-F:폴더  Esc:필터초기화  :q+Enter:종료  ?:도움말",
             # ── 미리보기 ─────────────────────────────────────────────────
             "--preview", preview_cmd,
             "--preview-window", "right:48%:border-left:wrap",
@@ -2169,11 +2191,21 @@ def main(
             "--bind", f"ctrl-k:execute({tag_cmd})+reload({reset_reload})",
             "--bind", f"ctrl-d:execute({delete_cmd})+reload({reset_reload})",
             "--bind", f"ctrl-x:execute({bulk_del_cmd})+reload({reset_reload})",
+            # Ctrl-B 본문검색: prompt 변경 + clear-query 로 change 이벤트 트리거 →
+            # mode_transform 이 prompt 보고 매 입력마다 DB reload (Linux/WSL).
+            # Windows 는 transform 미지원 — 1회성 reload + clear-query 동작 유지.
             "--bind", (
                 f"ctrl-b:change-prompt(본문검색> )"
                 f"+reload({body_reload})"
                 f"+clear-query"
                 f"+change-preview({search_preview_cmd})"
+            ),
+            # Ctrl-S 제목검색: body 와 동일한 패턴, FTS5 subject 컬럼 한정.
+            "--bind", (
+                f"ctrl-s:change-prompt(제목검색> )"
+                f"+reload({subject_reload})"
+                f"+clear-query"
+                f"+change-preview({preview_cmd})"
             ),
             "--bind", (
                 f"ctrl-r:change-prompt(검색> )"
@@ -2229,6 +2261,9 @@ def main(
             fzf_cmd += ["--bind", f"ctrl-t:transform({thread_transform})"]
         if tag_transform:
             fzf_cmd += ["--bind", f"alt-t:transform({tag_transform})"]
+        # change: 본문/제목 모드에서 입력 변경마다 DB reload (P1/P2 — Linux/WSL).
+        if mode_transform:
+            fzf_cmd += ["--bind", f"change:transform({mode_transform})"]
 
         if bat_cmd:
             fzf_cmd += ["--bind", f"ctrl-p:execute({bat_cmd})+abort"]

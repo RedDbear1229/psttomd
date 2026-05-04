@@ -1585,14 +1585,24 @@ def format_stats_for_display(db: Path, archive_root_path: Path) -> list[str]:
 def auto_update_index(archive_root_path: Path, cfg: dict) -> None:
     """아카이브에 새 MD 파일이 있으면 인덱스를 자동으로 증분 갱신한다.
 
-    config 의 mailview.auto_index 가 False 이면 즉시 반환한다.
-    DB 가 없으면 스킵 (사용자가 먼저 build-index 를 실행해야 한다).
-    archive/  하위 .md 파일 중 DB mtime 보다 새 파일이 있을 때만
-    build_index.py 를 서브프로세스로 호출한다 (증분 모드).
+    감지 신호 두 가지를 함께 사용한다:
 
-    staging.jsonl 이 없는데 새 MD 파일이 감지된 경우 (외부 복사 / 복원 /
-    pst2md --no-index 후) 증분 인덱싱은 무력해 0 행만 처리한다 — 이때
-    사용자에게 ``build-index --rebuild`` 권장 메시지를 출력한다 (P5).
+    1. **mtime 비교** — ``archive/**/*.md`` 중 DB 의 mtime 보다 최신인
+       파일이 있으면 ``has_new`` 로 본다.
+    2. **행수 비교** — ``archive/**/*.md`` 파일 수와 ``messages`` 테이블
+       행 수가 다르면 ``count_drift`` 로 본다. ``cp -p`` / ``rsync -a`` /
+       백업 복원으로 mtime 이 보존된 파일은 mtime 신호로는 감지되지
+       않으므로 행수 차이만으로도 mismatch 를 잡는다 (P5 잔여 보강).
+
+    동작:
+
+    - ``mailview.auto_index = false`` 면 즉시 반환.
+    - DB 가 없으면 스킵 (사용자가 ``build-index`` 를 먼저 실행해야 한다).
+    - ``has_new`` 가 있고 ``staging.jsonl`` 이 있으면 ``build-index`` 를
+      증분 모드로 호출.
+    - ``staging.jsonl`` 이 없는데 새 MD 가 보이면 rebuild 권장 메시지.
+    - ``count_drift`` 만 있고 mtime 신호가 없으면 (mtime 보존 복원 의심)
+      증분으로는 잡히지 않으므로 rebuild 권장 메시지만 출력하고 종료.
 
     Args:
         archive_root_path: 아카이브 루트 디렉터리 Path.
@@ -1605,24 +1615,51 @@ def auto_update_index(archive_root_path: Path, cfg: dict) -> None:
     if not db.exists():
         return  # DB 없음 — 사용자가 직접 build-index 실행 필요
 
-    db_mtime = db.stat().st_mtime
-
     archive_dir = archive_root_path / "archive"
     if not archive_dir.exists():
         return
 
-    has_new = any(
-        p.stat().st_mtime > db_mtime
-        for p in archive_dir.rglob("*.md")
-    )
-    if not has_new:
+    db_mtime = db.stat().st_mtime
+    has_new = False
+    file_count = 0
+    for p in archive_dir.rglob("*.md"):
+        file_count += 1
+        if p.stat().st_mtime > db_mtime:
+            has_new = True
+
+    # 행수 비교 (mtime 보존 복원 케이스 보강).  DB 손상이면 count_drift 검사 skip.
+    try:
+        conn = sqlite3.connect(str(db))
+        try:
+            row_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        row_count = file_count
+
+    count_drift = file_count != row_count
+
+    if not has_new and not count_drift:
         return
 
-    # staging 없이 새 MD 가 있으면 증분 인덱싱이 무의미 — rebuild 권장.
+    # mtime 신호 없이 행수만 어긋나면 staging 도 stale 일 가능성이 높다.
+    # 증분 인덱싱은 무의미 — 사용자에게 rebuild 만 권장.
+    if count_drift and not has_new:
+        click.echo(
+            f"[auto-index] 인덱스 행수 mismatch — files={file_count} "
+            f"vs DB={row_count} (diff={file_count - row_count:+d}).\n"
+            "             cp -p / rsync -a / 백업 복원으로 mtime 이 보존된\n"
+            "             파일이 있을 수 있습니다. 권장: build-index --rebuild",
+            err=True,
+        )
+        return
+
     staging = archive_root_path / "index_staging.jsonl"
     if not staging.exists():
         click.echo(
             "[auto-index] 새 MD 파일이 감지되었으나 staging.jsonl 이 없습니다.\n"
+            f"             archive/={file_count} vs DB={row_count} "
+            f"(diff={file_count - row_count:+d}).\n"
             "             외부 복사 / 복원 / pst2md --no-index 후라면 인덱스가\n"
             "             누락된 상태일 수 있습니다. 권장: build-index --rebuild",
             err=True,

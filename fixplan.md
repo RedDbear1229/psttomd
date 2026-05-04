@@ -113,7 +113,7 @@ Completion notes:
 
 ## Priority 5: Fix Index Refresh and Recovery
 
-Status: Partially completed.
+Status: Completed.
 
 Current issue: `mailview` auto-index calls `build-index`, but `build-index` normally consumes only `index_staging.jsonl`. If Markdown files are copied, restored, or generated with `--no-index`, new files may not enter the DB.
 
@@ -132,11 +132,7 @@ Completion notes:
 
 - `mailview --doctor` reports DB/file count mismatch and missing FTS prefix index.
 - `mailview` warns when new MD files are detected but `index_staging.jsonl` is missing.
-
-Remaining risk:
-
-- The auto-index check depends on `md_file.mtime > index.sqlite.mtime`. Files restored with preserved older mtimes, such as `cp -p`, backup restore, or `rsync -a`, can still be missing from DB without triggering the warning.
-- Improve detection by comparing DB row count/path set with `archive/**/*.md`, or at least by checking file count mismatch when staging is absent.
+- `auto_update_index()` also detects file-count vs DB-row drift even when mtimes are preserved (`cp -p`, `rsync -a`, restore-from-backup), and prints a clear `build-index --rebuild` recommendation without attempting an empty incremental run.
 
 ## Priority 6: Fix Rebuild Attachment Count
 
@@ -162,7 +158,7 @@ Completion notes:
 
 ### Priority 7: Fix `mailgrep --all-archives` Default DB Precheck
 
-Status: New.
+Status: Completed.
 
 Current issue:
 
@@ -178,6 +174,12 @@ Required change:
 Acceptance:
 
 - `mailgrep "term" --all-archives` searches all existing configured archive DBs without requiring the default DB to exist.
+
+Completion notes:
+
+- The default `db.exists()` guard was moved into the single-DB branch.
+- `--all-archives` builds the DB list from `archive_roots(cfg)` and exits with a clear "사용 가능한 아카이브 인덱스가 없습니다" message only when no archive DB exists.
+- `tests/test_mailgrep.py::TestAllArchivesPrecheck` covers the missing-default-DB success case, the no-archive-DB failure case, and the regression case where single-DB mode still requires the default DB.
 
 ### Priority 8: Add WSL fzf Smoke Test
 
@@ -214,7 +216,7 @@ Acceptance:
 2. Completed: add `mailgrep --subject` and safer FTS escaping.
 3. Completed: rework `mailview` title/body fzf modes to use DB reload on input change.
 4. Completed: add Korean search fixtures and prefix indexing.
-5. Remaining: strengthen auto-index recovery beyond mtime-only detection.
-6. Remaining: fix `mailgrep --all-archives` default DB precheck.
+5. Completed: strengthen auto-index recovery beyond mtime-only detection (file-count vs DB-row drift).
+6. Completed: fix `mailgrep --all-archives` default DB precheck.
 7. Remaining: add WSL-specific fzf smoke verification.
 8. Completed: document WSL-first setup in README and `docs/guide.md`.

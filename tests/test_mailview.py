@@ -850,6 +850,90 @@ class TestAutoUpdateIndex:
         assert "staging.jsonl" in captured.err
         assert "rebuild" in captured.err
 
+    @staticmethod
+    def _make_real_db(db_file: Path, n_rows: int) -> None:
+        """init_schema 적용 + messages 테이블에 n_rows 행 삽입."""
+        import sqlite3 as _sql
+        sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+        from build_index import init_schema  # type: ignore
+        conn = _sql.connect(str(db_file))
+        try:
+            init_schema(conn)
+            for i in range(n_rows):
+                conn.execute(
+                    "INSERT INTO messages (msgid, path) VALUES (?, ?)",
+                    (f"<m{i}>", f"archive/2024/01/01/m{i}.md"),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_count_drift_without_mtime_triggers_warn(self, tmp_path, capsys):
+        """P5 잔여: mtime 신호 없이 행수만 어긋나면 (cp -p / 복원 시뮬레이션)
+        subprocess 를 호출하지 않고 rebuild 권장 메시지를 출력한다."""
+        import os
+        db = tmp_path / "index.sqlite"
+        self._make_real_db(db, n_rows=0)  # DB 는 0 행
+        archive_dir = tmp_path / "archive" / "2024" / "01" / "01"
+        archive_dir.mkdir(parents=True)
+        # MD 파일 2개 — 모두 mtime 이 DB 보다 이전 (복원 시뮬레이션)
+        for i in range(2):
+            md = archive_dir / f"m{i}.md"
+            md.write_text("---\nx: y\n---\nbody", encoding="utf-8")
+            old = db.stat().st_mtime - 100
+            os.utime(md, (old, old))
+        cfg = self._cfg(tmp_path)
+        with patch("mailview.db_path", return_value=db), \
+             patch("mailview.subprocess.run") as mock_run:
+            auto_update_index(tmp_path, cfg)
+        mock_run.assert_not_called()
+        err = capsys.readouterr().err
+        assert "행수 mismatch" in err
+        assert "files=2" in err
+        assert "DB=0" in err
+        assert "diff=+2" in err
+        assert "rebuild" in err
+        assert "rsync" in err  # 복원 시나리오 안내 문구
+
+    def test_count_drift_orphan_rows_triggers_warn(self, tmp_path, capsys):
+        """DB 행 > 파일 수 (고아 행) 도 동일하게 rebuild 권장."""
+        import os
+        db = tmp_path / "index.sqlite"
+        self._make_real_db(db, n_rows=3)
+        archive_dir = tmp_path / "archive" / "2024" / "01" / "01"
+        archive_dir.mkdir(parents=True)
+        md = archive_dir / "m0.md"
+        md.write_text("---\nx: y\n---\n", encoding="utf-8")
+        old = db.stat().st_mtime - 100
+        os.utime(md, (old, old))
+        cfg = self._cfg(tmp_path)
+        with patch("mailview.db_path", return_value=db), \
+             patch("mailview.subprocess.run") as mock_run:
+            auto_update_index(tmp_path, cfg)
+        mock_run.assert_not_called()
+        err = capsys.readouterr().err
+        assert "행수 mismatch" in err
+        assert "diff=-2" in err
+
+    def test_clean_state_no_warn_no_subprocess(self, tmp_path, capsys):
+        """파일수 == DB 행수 + 새 mtime 없음이면 무동작."""
+        import os
+        db = tmp_path / "index.sqlite"
+        self._make_real_db(db, n_rows=2)
+        archive_dir = tmp_path / "archive" / "2024" / "01" / "01"
+        archive_dir.mkdir(parents=True)
+        for i in range(2):
+            md = archive_dir / f"m{i}.md"
+            md.write_text("---\nx: y\n---\n", encoding="utf-8")
+            old = db.stat().st_mtime - 100
+            os.utime(md, (old, old))
+        cfg = self._cfg(tmp_path)
+        with patch("mailview.db_path", return_value=db), \
+             patch("mailview.subprocess.run") as mock_run:
+            auto_update_index(tmp_path, cfg)
+        mock_run.assert_not_called()
+        assert capsys.readouterr().err == ""
+
 
 # ---------------------------------------------------------------------------
 # extract_urls

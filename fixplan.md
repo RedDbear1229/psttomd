@@ -183,7 +183,7 @@ Completion notes:
 
 ### Priority 8: Add WSL fzf Smoke Test
 
-Status: New.
+Status: Completed.
 
 Current issue:
 
@@ -197,6 +197,12 @@ Required change:
 Acceptance:
 
 - A maintainer can verify the target WSL + fzf workflow with a single documented command or short runbook.
+
+Completion notes:
+
+- `scripts/wsl_smoke.sh` automates 7 verification steps: pst2md conversion, build-index --rebuild, FTS5 `prefix='2 3 4'` presence, file/DB row-count match, mailgrep partial-match search, `mailview --doctor` output (`fts prefix ✓`, `diff=+0`), and P5 count-drift detection (creates an mtime-preserved file and asserts `diff=+1`).
+- README and `docs/guide.md` §13.6 were updated to reference the script and a fall-back manual recipe; the manual recipe now uses `MAIL_ARCHIVE=...` because `run_doctor()` reads the env var rather than `--archive`.
+- Interactive `Ctrl-B` / `Ctrl-S` fzf behavior is left to manual verification (terminal automation is too brittle to script reliably).
 
 ## WSL Operational Recommendations
 
@@ -218,5 +224,5 @@ Acceptance:
 4. Completed: add Korean search fixtures and prefix indexing.
 5. Completed: strengthen auto-index recovery beyond mtime-only detection (file-count vs DB-row drift).
 6. Completed: fix `mailgrep --all-archives` default DB precheck.
-7. Remaining: add WSL-specific fzf smoke verification.
+7. Completed: add WSL-specific fzf smoke verification (`scripts/wsl_smoke.sh`).
 8. Completed: document WSL-first setup in README and `docs/guide.md`.

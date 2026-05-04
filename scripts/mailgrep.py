@@ -393,10 +393,6 @@ def main(
         cfg["archive"]["root"] = archive
 
     db = db_path(cfg)
-    if not db.exists():
-        click.echo(f"오류: 인덱스 없음 → {db}", err=True)
-        click.echo("먼저 실행: python build_index.py", err=True)
-        sys.exit(1)
 
     # ── 스마트 쿼리 파싱 ────────────────────────────────────────────────
     # --subject CLI 옵션 우선, 없으면 smart 모드의 subject:키워드 사용.
@@ -420,12 +416,27 @@ def main(
         sys.exit(1)
 
     # ── 검색 대상 DB 목록 결정 ──────────────────────────────────────────
+    # 기본 archive.root 의 DB 가 없어도 --all-archives 는 다른 archive.roots
+    # 에 등록된 DB 를 검색할 수 있어야 한다. 따라서 db.exists() 체크는
+    # --all-archives 가 아닌 단일-DB 분기로만 한정한다.
     if all_archives:
         dbs = [
             r / "index.sqlite"
             for r in archive_roots(cfg)
             if (r / "index.sqlite").exists()
         ]
+        if not dbs:
+            click.echo(
+                "오류: --all-archives — 사용 가능한 아카이브 인덱스가 없습니다.",
+                err=True,
+            )
+            click.echo(
+                "archive.root / archive.roots 에 등록된 모든 경로에 "
+                "index.sqlite 가 없습니다.",
+                err=True,
+            )
+            click.echo("먼저 실행: build-index --archive <루트>", err=True)
+            sys.exit(1)
     else:
         if not db.exists():
             click.echo(f"오류: 인덱스 없음 → {db}", err=True)

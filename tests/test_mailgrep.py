@@ -350,3 +350,113 @@ class TestParseSmartQuery:
             has_attachment=True,
         )
         assert "n_attachments" in sql
+
+
+# ---------------------------------------------------------------------------
+# --all-archives — 기본 DB 가 없어도 다른 archive.roots 를 검색한다 (P7)
+# ---------------------------------------------------------------------------
+
+class TestAllArchivesPrecheck:
+    """P7: 기본 archive.root 의 index.sqlite 가 없어도 --all-archives 는
+    archive.roots 에 등록된 다른 DB 들을 정상 검색해야 한다."""
+
+    @staticmethod
+    def _make_archive(root: Path, msgid: str = "<m1>", subject: str = "test") -> None:
+        """root/index.sqlite 에 messages 1행이 있는 최소 DB 를 만든다."""
+        import mailgrep as mg
+        from build_index import init_schema
+
+        root.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(root / "index.sqlite"))
+        try:
+            init_schema(conn)
+            conn.execute(
+                "INSERT INTO messages (msgid, path, subject, date) VALUES (?, ?, ?, ?)",
+                (msgid, str(root / "m.md"), subject, "2024-01-01T00:00:00+00:00"),
+            )
+            conn.execute(
+                "INSERT INTO messages_fts (rowid, subject, body) VALUES "
+                "((SELECT rowid FROM messages WHERE msgid=?), ?, ?)",
+                (msgid, subject, "body content"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        del mg  # noqa: F841
+
+    def test_all_archives_works_when_default_db_missing(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """기본 archive.root 의 DB 가 없고 archive.roots 의 DB 만 있을 때
+        --all-archives 가 조기 종료하지 않고 검색을 수행한다."""
+        from click.testing import CliRunner
+
+        import mailgrep as mg
+
+        primary = tmp_path / "primary"     # DB 없음
+        secondary = tmp_path / "secondary"  # DB 있음
+        primary.mkdir()
+        self._make_archive(secondary, msgid="<m1>", subject="invoice")
+
+        cfg = {
+            "archive": {
+                "root": str(primary),
+                "roots": [str(secondary)],
+            },
+            "tools": {},
+        }
+        monkeypatch.setattr(mg, "load_config", lambda: cfg)
+
+        runner = CliRunner()
+        result = runner.invoke(mg.main, ["invoice", "--all-archives"])
+        assert result.exit_code == 0, result.output
+        assert "인덱스 없음" not in result.output
+        assert "invoice" in result.output
+
+    def test_all_archives_fails_when_no_db_anywhere(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """archive.root / archive.roots 모두 DB 가 없으면 명확한 오류로 종료."""
+        from click.testing import CliRunner
+
+        import mailgrep as mg
+
+        primary = tmp_path / "primary"
+        secondary = tmp_path / "secondary"
+        primary.mkdir()
+        secondary.mkdir()
+
+        cfg = {
+            "archive": {
+                "root": str(primary),
+                "roots": [str(secondary)],
+            },
+            "tools": {},
+        }
+        monkeypatch.setattr(mg, "load_config", lambda: cfg)
+
+        runner = CliRunner()
+        result = runner.invoke(mg.main, ["invoice", "--all-archives"])
+        assert result.exit_code != 0
+        assert "사용 가능한 아카이브 인덱스가 없습니다" in result.output
+
+    def test_default_mode_still_requires_default_db(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """--all-archives 없을 때는 기존처럼 기본 DB 가 없으면 즉시 실패."""
+        from click.testing import CliRunner
+
+        import mailgrep as mg
+
+        primary = tmp_path / "primary"
+        primary.mkdir()
+        cfg = {
+            "archive": {"root": str(primary), "roots": []},
+            "tools": {},
+        }
+        monkeypatch.setattr(mg, "load_config", lambda: cfg)
+
+        runner = CliRunner()
+        result = runner.invoke(mg.main, ["invoice"])
+        assert result.exit_code != 0
+        assert "인덱스 없음" in result.output

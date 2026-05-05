@@ -235,10 +235,34 @@ class TestInitConfigFile:
         assert "/custom/path" in text
 
     def test_custom_backend(self, tmp_path, monkeypatch):
+        """생성된 config.toml 을 실제 TOML 로 파싱해 pst_backend 가 최상위에
+        위치하는지 검증한다 (codex adversarial review). 단순 string-contains
+        는 archive.pst_backend 로 잘못 nested 된 경우를 잡지 못해 부적합."""
+        try:
+            import tomllib  # Python 3.11+
+        except ImportError:
+            import tomli as tomllib  # type: ignore
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         init_config_file(backend="readpst")
-        text = (tmp_path / ".pst2md" / "config.toml").read_text(encoding="utf-8")
-        assert "readpst" in text
+        config_path = tmp_path / ".pst2md" / "config.toml"
+        parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        # 최상위 키여야 한다
+        assert parsed.get("pst_backend") == "readpst"
+        # [archive] 안에 nested 되면 안 된다
+        assert "pst_backend" not in parsed.get("archive", {})
+
+    def test_load_config_reads_generated_backend(self, tmp_path, monkeypatch):
+        """init_config_file → load_config 왕복 — 생성기와 로더의 계약.
+
+        load_config() 가 요청한 backend 값을 cfg["pst_backend"] 로 그대로
+        반환해야 한다. nested 된 archive.pst_backend 는 load_config 의
+        DEFAULT_CONFIG 와 무관하게 무시되므로 이 테스트가 한 번에 잡는다."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # MAIL_ARCHIVE env 가 archive.root 오버라이드를 일으키지 않도록 정리
+        monkeypatch.delenv("MAIL_ARCHIVE", raising=False)
+        init_config_file(backend="readpst", force=True)
+        cfg = load_config()
+        assert cfg["pst_backend"] == "readpst"
 
     def test_contains_required_sections(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)

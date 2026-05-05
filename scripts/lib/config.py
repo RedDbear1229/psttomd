@@ -374,11 +374,14 @@ def init_config_file(
         f"# pst2md 설정 파일\n"
         f"# 생성: {created_at}  플랫폼: {plat}\n"
         f"\n"
-        f"[archive]\n"
-        f'root = "{archive}"\n'
-        f"\n"
+        # pst_backend 는 TOML 최상위 키. [archive] 보다 먼저 써야 한다 —
+        # [archive] 뒤에 두면 archive.pst_backend 로 nested 되어 load_config()
+        # 의 cfg["pst_backend"] 가 기본값으로 떨어진다 (codex adversarial review).
         f"# PST 파서 백엔드: auto | pypff | readpst | win32com\n"
         f'pst_backend = "{backend}"\n'
+        f"\n"
+        f"[archive]\n"
+        f'root = "{archive}"\n'
         f"\n"
         f"[tools]\n"
         f'fzf     = "fzf"\n'

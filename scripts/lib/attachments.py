@@ -130,7 +130,7 @@ def store_attachment(
     if not dest_path.exists():
         dest_path.write_bytes(data)
 
-    rel_path = str(dest_path.relative_to(attachments_root.parent))
+    rel_path = dest_path.relative_to(attachments_root.parent).as_posix()
 
     return {
         "name":   safe_name,

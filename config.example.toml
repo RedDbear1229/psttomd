@@ -13,6 +13,14 @@
 #   pst2md-config edit                         # $EDITOR 로 열기
 # 전체 키 목록은 docs/guide.md §7.9 참조.
 
+# ── PST 파서 백엔드 ────────────────────────────────────────────────────────
+# 주의: pst_backend 는 [archive] 안이 아니라 TOML 최상위 키입니다.
+# auto     — 플랫폼에 따라 자동 선택 (linux/wsl → pypff, windows → win32com)
+# pypff    — libpff-python 직접 파싱 (Linux/WSL, 속도 최고)
+# readpst  — readpst CLI 경유 EML 파싱 (pypff 설치 어려울 때 대안)
+# win32com — Outlook COM API (Windows Native, Outlook 설치 필수)
+pst_backend = "auto"
+
 # ── 아카이브 루트 디렉터리 ──────────────────────────────────────────────────
 [archive]
 
@@ -33,23 +41,19 @@ root = "~/mail-archive"
 # mailgrep --all-archives 로 모든 아카이브를 한 번에 검색합니다.
 # roots = ["~/work-archive", "~/personal-archive"]
 
-# ── PST 파서 백엔드 ────────────────────────────────────────────────────────
-# auto     — 플랫폼에 따라 자동 선택 (linux/wsl → pypff, windows → win32com)
-# pypff    — libpff-python 직접 파싱 (Linux/WSL, 속도 최고)
-# readpst  — readpst CLI 경유 EML 파싱 (pypff 설치 어려울 때 대안)
-# win32com — Outlook COM API (Windows Native, Outlook 설치 필수)
-pst_backend = "auto"
-
 # ── 외부 도구 경로 ────────────────────────────────────────────────────────
 # 도구가 PATH 에 있으면 이름만 지정해도 됩니다.
 # 특정 경로를 지정하려면 절대 경로를 사용하세요.
 [tools]
 fzf     = "fzf"
 glow    = "glow"     # sixel 미지원 터미널용 폴백 뷰어
-mdcat   = "mdcat"    # 기본 마크다운 뷰어 (이미지 인라인 렌더, 아래 preview_viewer 참조)
 bat     = "bat"
 sqlite3 = "sqlite3"
 rg      = "rg"       # ripgrep (mailgrep 내부 검색에 사용)
+
+# mdcat 경로를 직접 지정하려면 아래 줄의 주석을 해제하세요.
+# pst2md-config set/get 은 아직 tools.mdcat 을 관리하지 않으므로 수동 편집 항목입니다.
+# mdcat = "mdcat"
 
 # Windows 경로 예시:
 # fzf  = "C:/tools/fzf/fzf.exe"

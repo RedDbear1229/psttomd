@@ -270,35 +270,49 @@ class TestWrite:
         assert "구 버전" not in text
 
     def test_tmp_cleaned_on_write_failure(self, tmp_path: Path) -> None:
-        """write() 중 쓰기 실패(권한 오류) 시 .tmp 파일이 남지 않는다."""
-        import os
+        """write() 중 쓰기 실패 시 .tmp 파일이 남지 않는다."""
+        from unittest.mock import patch
         md = tmp_path / "mail.md"
         md.write_text(_make_md(), encoding="utf-8")
         parts = split(md)
 
-        # 디렉터리를 읽기 전용으로 만들어 tmp 파일 생성 실패 유발
-        tmp_path.chmod(0o555)
-        try:
+        tmp_file_path = md.with_suffix(".tmp")
+
+        original_write_text = Path.write_text
+
+        call_count = [0]
+        def failing_write_text(self, data, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise OSError("simulated write failure")
+            return original_write_text(self, data, **kwargs)
+
+        with patch.object(Path, "write_text", failing_write_text):
             with pytest.raises(OSError):
                 write(md, {}, "## 요약\n내용\n\n", parts)
-            assert not (tmp_path / "mail.tmp").exists()
-        finally:
-            tmp_path.chmod(0o755)
+
+        assert not tmp_file_path.exists()
 
     def test_atomic_write_preserves_original_on_error(self, tmp_path: Path) -> None:
         """write() 오류 시 원본 파일 내용이 훼손되지 않는다."""
-        import os
+        from unittest.mock import patch
         original_text = _make_md()
         md = tmp_path / "mail.md"
         md.write_text(original_text, encoding="utf-8")
         parts = split(md)
 
-        tmp_path.chmod(0o555)
-        try:
+        original_write_text = Path.write_text
+
+        call_count = [0]
+        def failing_write_text(self, data, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise OSError("simulated write failure")
+            return original_write_text(self, data, **kwargs)
+
+        with patch.object(Path, "write_text", failing_write_text):
             with pytest.raises(OSError):
                 write(md, {}, "", parts)
-        finally:
-            tmp_path.chmod(0o755)
 
         assert md.read_text(encoding="utf-8") == original_text
 

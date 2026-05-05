@@ -27,6 +27,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent))
 from lib.config import load_config
+from lib.md_io import split as md_split
 
 logging.basicConfig(
     level=logging.INFO,
@@ -167,25 +168,20 @@ def init_schema(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 
 def read_body(path: str) -> str:
-    """Markdown 파일에서 YAML frontmatter 를 제외한 본문을 추출한다.
+    """Markdown 파일에서 pristine 본문만 추출한다.
 
-    첫 번째 '---' 구분자 쌍 사이의 내용을 건너뛰고 이후 텍스트를 반환한다.
-    FTS5 인덱싱에 사용된다.
+    md_io.split() 을 사용해 첨부 섹션·LLM 블록을 제외한 원본 이메일 본문만
+    반환한다. FTS5 인덱싱에 사용된다.
 
     Args:
         path: Markdown 파일 경로 문자열.
 
     Returns:
-        frontmatter 를 제외한 본문 문자열. 읽기 실패 시 빈 문자열.
+        pristine 본문 문자열. 읽기·파싱 실패 시 빈 문자열.
     """
     try:
-        text = Path(path).read_text(encoding="utf-8")
-        if text.startswith("---"):
-            end = text.find("\n---\n", 3)
-            if end != -1:
-                return text[end + 4:].strip()
-        return text.strip()
-    except OSError:
+        return md_split(Path(path)).body
+    except (OSError, ValueError):
         return ""
 
 

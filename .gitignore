@@ -22,6 +22,9 @@ tests/data/enron.pst
 .state.json
 errors/
 
+# pytest --basetemp 임시 디렉터리 (외부 리뷰·디버깅용)
+.tmp_*/
+
 # OS
 .DS_Store
 Thumbs.db
